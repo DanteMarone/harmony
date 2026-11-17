@@ -85,3 +85,12 @@ This repository is public. The rules:
 - Invite codes and session tokens are generated at runtime and stored only as
   hashes; they never appear in logs.
 - CI scans every push for accidentally committed secrets.
+
+## Licence
+
+Copyright (C) 2026 DanteMarone and contributors.
+
+Harmony is free software, released under the
+[GNU Affero General Public License, version 3](LICENSE). You may use, change
+and share it; if you run a changed version for other people, you must make
+your changes available to them under the same licence.
