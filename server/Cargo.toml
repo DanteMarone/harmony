@@ -6,8 +6,9 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 argon2 = "0.6.0"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 axum-extra = { version = "0.12.6", features = ["cookie"] }
+base64 = "0.23.1"
 getrandom = "0.4.3"
 hex = "0.4.3"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -21,6 +22,9 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [dev-dependencies]
+futures-util = "0.3.34"
+harmony-crypto = { path = "../crypto" }
 http-body-util = "0.1.5"
 tempfile = "3.27.0"
+tokio-tungstenite = "0.30.0"
 tower = { version = "0.5.3", features = ["util"] }

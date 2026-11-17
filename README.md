@@ -4,7 +4,9 @@ A small, private, self-hosted chat app for a group of friends: direct messages,
 group chats and voice calls, with end-to-end encryption. One Rust program, one
 SQLite file, no third-party services.
 
-**Status:** early development. Accounts and invites work; messaging and voice are next.
+**Status:** early development. Accounts, invites and end-to-end encrypted direct
+messages and group chats work. File sharing and voice calls are next. Read
+[how the encryption works](docs/encryption.md), including what is not done yet.
 
 ## Principles
 
@@ -19,16 +21,26 @@ SQLite file, no third-party services.
 
 | Path | What |
 | --- | --- |
-| `server/` | Rust server (axum, SQLite via sqlx): API and static file hosting |
+| `server/` | Rust server (axum, SQLite via sqlx): API, real-time notices and static file hosting |
 | `server/migrations/` | Database schema |
+| `crypto/` | Encryption layer: a thin wrapper around OpenMLS, compiled to WebAssembly |
 | `web/` | Web app (Svelte + TypeScript, built with Vite) |
+| `docs/` | Design notes |
 
 ## Running locally
 
-You need [Rust](https://rustup.rs) and [Node.js](https://nodejs.org) 22 or newer.
+You need [Rust](https://rustup.rs) and [Node.js](https://nodejs.org) 22 or newer,
+plus two one-time additions so the encryption code can be built for the browser:
 
 ```sh
-# 1. Build the web app
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.130 --locked
+```
+
+Then:
+
+```sh
+# 1. Build the web app (this also builds the encryption module)
 cd web
 npm install
 npm run build
@@ -44,14 +56,18 @@ Open <http://localhost:8080>. On first start the server prints a one-time
 invite link in the console; open it to create the admin account. The admin can
 then create invite links for friends.
 
-While working on the web app, run `npm run dev` in `web/` for live reload; it
-forwards API calls to the server on port 8080.
+While working on the web app, run `npm run wasm` once and then `npm run dev` in
+`web/` for live reload; it forwards API calls to the server on port 8080.
+
+Harmony can only be open in one tab per account at a time, because two tabs
+sharing one set of encryption keys would corrupt them.
 
 ## Tests
 
 ```sh
-cd server && cargo test
-cd web && npm run check
+cd crypto && cargo test     # the encryption layer, with several simulated devices
+cd server && cargo test     # the API, including full encrypted conversations
+cd web && npm run check     # type checks
 ```
 
 ## Configuration

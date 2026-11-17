@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api, type User } from './lib/api'
   import Auth from './lib/Auth.svelte'
-  import Invites from './lib/Invites.svelte'
+  import Main from './lib/Main.svelte'
 
   let user = $state<User | null>(null)
   let loading = $state(true)
@@ -47,17 +47,5 @@
 {:else if !user}
   <Auth {invite} onSignedIn={signedIn} />
 {:else}
-  <header class="topbar">
-    <strong>Harmony</strong>
-    <span class="spacer"></span>
-    <span>{user.display_name}{user.is_admin ? ' (admin)' : ''}</span>
-    <button class="secondary" onclick={signOut}>Sign out</button>
-  </header>
-  <main class="home">
-    <section class="panel">
-      <h2>Welcome, {user.display_name}</h2>
-      <p>Your account is set up. Encrypted messages and voice calls are coming next.</p>
-    </section>
-    {#if user.is_admin}<Invites />{/if}
-  </main>
+  {#key user.id}<Main {user} onSignOut={signOut} />{/key}
 {/if}

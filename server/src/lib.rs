@@ -1,9 +1,12 @@
 //! Harmony server: a small, private, self-hosted chat backend.
 
 pub mod auth;
+pub mod chats;
 pub mod config;
 pub mod db;
+pub mod devices;
 pub mod error;
+pub mod hub;
 
 use std::sync::Arc;
 
@@ -20,7 +23,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 
-use crate::{auth::LoginLimiter, config::Config};
+use crate::{auth::LoginLimiter, config::Config, hub::Hub};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -28,6 +31,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub login_limiter: Arc<LoginLimiter>,
     pub dummy_password_hash: String,
+    pub hub: Hub,
 }
 
 impl AppState {
@@ -37,6 +41,7 @@ impl AppState {
             config: Arc::new(config),
             login_limiter: Arc::new(LoginLimiter::default()),
             dummy_password_hash: auth::make_dummy_hash().await?,
+            hub: Hub::default(),
         })
     }
 }
@@ -44,7 +49,12 @@ impl AppState {
 /// Everything the server answers: the JSON API under `/api`, and the built web
 /// app for every other path.
 pub fn app(state: AppState) -> Router {
-    let api = Router::new().route("/health", get(health)).merge(auth::routes());
+    let api = Router::new()
+        .route("/health", get(health))
+        .route("/ws", get(hub::connect))
+        .merge(auth::routes())
+        .merge(devices::routes())
+        .merge(chats::routes());
 
     let web_dir = state.config.web_dir.clone();
     let web = ServeDir::new(&web_dir).fallback(ServeFile::new(web_dir.join("index.html")));
