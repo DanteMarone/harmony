@@ -18,6 +18,8 @@ export interface StoredMessage {
   sentAt: number
   /** Set when the message could not be sent or could not be decrypted. */
   problem?: 'failed' | 'undecryptable'
+  /** An encrypted copy is in this person's history backup on the server. */
+  backedUp?: boolean
 }
 
 export interface StoredChat {
@@ -36,6 +38,21 @@ export interface DeviceRecord {
   deviceId: number
   identity: string
   state: Uint8Array
+  /** The owner's public identity key this device was confirmed under. */
+  identityKey?: Uint8Array
+  /** Encrypts the history backup. Derived from the recovery code; never sent anywhere. */
+  backupKey?: Uint8Array
+  /** The person chose not to enter their recovery code on this device for now. */
+  recoverySkipped?: boolean
+}
+
+/** What this device remembers about another person's identity key. */
+export interface TrustRecord {
+  userId: number
+  /** The identity key (base64) first seen, or last accepted, for this person. */
+  identityKey: string
+  /** The person using this device compared safety numbers with them. */
+  verified: boolean
 }
 
 function wrap<T>(request: IDBRequest<T>): Promise<T> {
@@ -58,13 +75,16 @@ export class Store {
 
   /** One database per account, so two people sharing a browser never mix data. */
   static async open(userId: number): Promise<Store> {
-    const request = indexedDB.open(`harmony-user-${userId}`, 1)
-    request.onupgradeneeded = () => {
+    const request = indexedDB.open(`harmony-user-${userId}`, 2)
+    request.onupgradeneeded = (event) => {
       const db = request.result
-      db.createObjectStore('device')
-      db.createObjectStore('chats', { keyPath: 'chatId' })
-      const messages = db.createObjectStore('messages', { keyPath: 'key' })
-      messages.createIndex('byChat', 'chatId')
+      if (event.oldVersion < 1) {
+        db.createObjectStore('device')
+        db.createObjectStore('chats', { keyPath: 'chatId' })
+        const messages = db.createObjectStore('messages', { keyPath: 'key' })
+        messages.createIndex('byChat', 'chatId')
+      }
+      if (event.oldVersion < 2) db.createObjectStore('trust', { keyPath: 'userId' })
     }
     return new Store(await wrap(request))
   }
@@ -92,8 +112,12 @@ export class Store {
     messages?: StoredMessage[]
     deleteMessages?: string[]
     deleteChats?: string[]
+    trust?: TrustRecord[]
+    deleteTrust?: number[]
   }): Promise<void> {
-    const tx = this.db.transaction(['device', 'chats', 'messages'], 'readwrite')
+    const tx = this.db.transaction(['device', 'chats', 'messages', 'trust'], 'readwrite')
+    for (const record of changes.trust ?? []) tx.objectStore('trust').put(record)
+    for (const userId of changes.deleteTrust ?? []) tx.objectStore('trust').delete(userId)
     if (changes.device) tx.objectStore('device').put(changes.device, 'self')
     for (const chat of changes.chats ?? []) tx.objectStore('chats').put(chat)
     for (const message of changes.messages ?? []) tx.objectStore('messages').put(message)
@@ -119,5 +143,35 @@ export class Store {
   async messages(chatId: string): Promise<StoredMessage[]> {
     const index = this.db.transaction('messages').objectStore('messages').index('byChat')
     return wrap(index.getAll(IDBKeyRange.only(chatId)))
+  }
+
+  async allMessages(): Promise<StoredMessage[]> {
+    return wrap(this.db.transaction('messages').objectStore('messages').getAll())
+  }
+
+  async trust(): Promise<TrustRecord[]> {
+    return wrap(this.db.transaction('trust').objectStore('trust').getAll())
+  }
+
+  /**
+   * Records which messages now have (or, with `false`, no longer have) a
+   * copy in the backup. Reads and writes in one step so a message changed
+   * in the meantime is not overwritten with an old version.
+   */
+  async setBackedUp(keys: string[] | 'all', backedUp: boolean): Promise<void> {
+    const tx = this.db.transaction('messages', 'readwrite')
+    const messages = tx.objectStore('messages')
+    const update = (message: StoredMessage | undefined) => {
+      if (message && !!message.backedUp !== backedUp) messages.put({ ...message, backedUp })
+    }
+    if (keys === 'all') {
+      messages.getAll().onsuccess = (event) =>
+        (event.target as IDBRequest<StoredMessage[]>).result.forEach(update)
+    } else {
+      for (const key of keys) {
+        messages.get(key).onsuccess = (event) => update((event.target as IDBRequest<StoredMessage>).result)
+      }
+    }
+    await done(tx)
   }
 }

@@ -6,6 +6,8 @@
   import Invites from './Invites.svelte'
   import Members from './Members.svelte'
   import NewChat from './NewChat.svelte'
+  import Recovery from './Recovery.svelte'
+  import Verify from './Verify.svelte'
 
   let { user, onSignOut }: { user: User; onSignOut: () => void } = $props()
 
@@ -15,7 +17,17 @@
   void engine.start()
   onDestroy(() => engine.stop())
 
-  let dialog = $state<'new' | 'members' | 'invites' | null>(null)
+  let dialog = $state<'new' | 'members' | 'invites' | 'security' | null>(null)
+  /** The person whose verification screen is open, on top of any other dialog. */
+  let verifying = $state<number | null>(null)
+  // A recovery code must be set up before anything else; entering one on a
+  // new device is asked for once and can be skipped.
+  const mustRecover = $derived(engine.recovery === 'setup' || engine.recovery === 'code')
+
+  function openRecovery() {
+    verifying = null
+    dialog = 'security'
+  }
 
   const chats = $derived(
     [...engine.chats].sort((a, b) => Math.max(b.last_seq, 0) - Math.max(a.last_seq, 0) || b.created_at - a.created_at),
@@ -72,13 +84,18 @@
           <span>{user.display_name}</span>
           <span class="hint">{engine.connected ? 'Connected' : 'Reconnecting…'}</span>
         </div>
+        {#if engine.recovery === 'skipped'}
+          <button class="secondary attention" onclick={openRecovery}>Confirm this device</button>
+        {:else}
+          <button class="secondary" onclick={openRecovery}>Security</button>
+        {/if}
         {#if user.is_admin}<button class="secondary" onclick={() => (dialog = 'invites')}>Invites</button>{/if}
         <button class="secondary" onclick={onSignOut}>Sign out</button>
       </footer>
     </aside>
 
     {#if active}
-      <Chat {engine} chat={active} onMembers={() => (dialog = 'members')} />
+      <Chat {engine} chat={active} onMembers={() => (dialog = 'members')} onVerify={(userId) => (verifying = userId)} />
     {:else}
       <section class="chat placeholder">
         <p class="lead">Pick a chat, or start a new one.</p>
@@ -89,7 +106,7 @@
   {#if dialog === 'new'}
     <NewChat {engine} onDone={newChatDone} />
   {:else if dialog === 'members' && active}
-    <Members {engine} chat={active} onClose={() => (dialog = null)} />
+    <Members {engine} chat={active} onClose={() => (dialog = null)} onVerify={(userId) => (verifying = userId)} />
   {:else if dialog === 'invites'}
     <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && (dialog = null)}>
       <div class="dialog">
@@ -97,5 +114,19 @@
         <div class="actions"><button class="secondary" onclick={() => (dialog = null)}>Close</button></div>
       </div>
     </div>
+  {/if}
+
+  {#if mustRecover}
+    <Recovery {engine} />
+  {:else if verifying !== null}
+    <Verify
+      {engine}
+      userId={verifying}
+      chatId={active?.id}
+      onClose={() => (verifying = null)}
+      onRecovery={openRecovery}
+    />
+  {:else if dialog === 'security'}
+    <Recovery {engine} onClose={() => (dialog = null)} />
   {/if}
 {/if}

@@ -2,7 +2,20 @@
   import type { ChatInfo } from './api'
   import type { Engine } from './engine.svelte'
 
-  let { engine, chat, onClose }: { engine: Engine; chat: ChatInfo; onClose: () => void } = $props()
+  let {
+    engine,
+    chat,
+    onClose,
+    onVerify,
+  }: { engine: Engine; chat: ChatInfo; onClose: () => void; onVerify: (userId: number) => void } = $props()
+
+  const statusText = {
+    verified: 'Verified',
+    unverified: 'Not verified',
+    changed: 'Identity changed',
+    unconfirmed: 'Unconfirmed device',
+    none: 'No recovery code yet',
+  }
 
   let toAdd = $state<number[]>([])
   let error = $state('')
@@ -42,8 +55,15 @@
             {member.display_name}
             {#if member.user_id === chat.created_by}<span class="hint">(creator)</span>{/if}
           </span>
-          {#if isCreator && member.user_id !== engine.me.id}
-            <button class="secondary" onclick={() => remove(member.user_id)}>Remove</button>
+          {#if member.user_id !== engine.me.id}
+            {@const status = engine.trustStatus(member.user_id, chat.id)}
+            <span class="row-actions">
+              <span class="trust {status}">{statusText[status]}</span>
+              <button class="secondary" onclick={() => onVerify(member.user_id)}>Verify</button>
+              {#if isCreator}
+                <button class="secondary" onclick={() => remove(member.user_id)}>Remove</button>
+              {/if}
+            </span>
           {/if}
         </li>
       {/each}

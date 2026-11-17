@@ -70,7 +70,7 @@ pub async fn notify_chat(state: &AppState, chat_id: &str) -> ApiResult<()> {
     Ok(())
 }
 
-async fn require_member(db: &SqlitePool, chat_id: &str, user_id: i64) -> ApiResult<()> {
+pub async fn require_member(db: &SqlitePool, chat_id: &str, user_id: i64) -> ApiResult<()> {
     let row: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?")
         .bind(chat_id)
         .bind(user_id)
@@ -378,6 +378,12 @@ async fn remove_member(
     .bind(target)
     .execute(&state.db)
     .await?;
+    // Their backup of this chat goes with them, as the copy on their devices does.
+    sqlx::query("DELETE FROM backup_messages WHERE chat_id = ? AND user_id = ?")
+        .bind(&chat_id)
+        .bind(target)
+        .execute(&state.db)
+        .await?;
     if everyone.len() == 1 {
         // The last person left: nothing can ever read this chat again.
         sqlx::query("DELETE FROM chats WHERE id = ?")

@@ -4,7 +4,16 @@
   import type { Engine } from './engine.svelte'
   import type { StoredMessage } from './store'
 
-  let { engine, chat, onMembers }: { engine: Engine; chat: ChatInfo; onMembers: () => void } = $props()
+  let {
+    engine,
+    chat,
+    onMembers,
+    onVerify,
+  }: { engine: Engine; chat: ChatInfo; onMembers: () => void; onVerify: (userId: number) => void } = $props()
+
+  const warnings = $derived(engine.chatWarnings(chat))
+  const other = $derived(chat.kind === 'dm' ? chat.members.find((m) => m.user_id !== engine.me.id) : undefined)
+  const otherVerified = $derived(other ? engine.trustStatus(other.user_id, chat.id) === 'verified' : false)
 
   let draft = $state('')
   let scroller: HTMLElement | undefined = $state()
@@ -49,13 +58,30 @@
     <div>
       <h2>{engine.chatTitle(chat)}</h2>
       <p class="hint">
-        {chat.kind === 'group' ? `${chat.members.length} members, end-to-end encrypted` : 'End-to-end encrypted'}
+        {chat.kind === 'group' ? `${chat.members.length} members, end-to-end encrypted` : 'End-to-end encrypted'}{otherVerified ? ', verified' : ''}
       </p>
     </div>
     {#if chat.kind === 'group'}
       <button class="secondary" onclick={onMembers}>Members</button>
+    {:else if other}
+      <button class="secondary" onclick={() => onVerify(other.user_id)}>Verify</button>
     {/if}
   </header>
+
+  {#each warnings as warning (warning.userId)}
+    <div class="warning strip" role="alert">
+      <span>
+        {#if warning.userId === engine.me.id}
+          One of your own devices in this chat has not been confirmed with your recovery code.
+        {:else if warning.status === 'changed'}
+          {engine.userName(warning.userId)}'s security identity has changed.
+        {:else}
+          {engine.userName(warning.userId)} has a device in this chat that they have not confirmed.
+        {/if}
+      </span>
+      <button class="secondary" onclick={() => onVerify(warning.userId)}>Review</button>
+    </div>
+  {/each}
 
   <div class="messages" bind:this={scroller}>
     {#if broken}
@@ -69,7 +95,14 @@
         automatically the next time one of them is online.
       </p>
     {:else if messages.length === 0}
-      <p class="notice">No messages yet. Messages sent before this device joined can't be shown here.</p>
+      <p class="notice">
+        No messages yet.
+        {#if engine.recovery === 'ready'}
+          Messages sent before you joined this chat can't be shown.
+        {:else}
+          Messages sent before this device joined appear once you confirm it with your recovery code.
+        {/if}
+      </p>
     {/if}
 
     {#each messages as message, i (message.key)}

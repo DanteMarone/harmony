@@ -21,10 +21,25 @@ export interface InviteInfo {
   used_by: string | null
 }
 
+export interface DeviceInfo {
+  id: number
+  identity: string
+  /** The owner's signature over this device's key (base64), once they confirmed it. */
+  signature: string | null
+}
+
 export interface UserInfo {
   id: number
   username: string
   display_name: string
+  /** Public identity key (base64); null until the person sets up a recovery code. */
+  identity_key: string | null
+  devices: DeviceInfo[]
+}
+
+export interface BackupItem {
+  seq: number
+  data: string
 }
 
 export interface ChatMember {
@@ -152,6 +167,13 @@ export const api = {
     request<{ seq: number; created_at: number }>('POST', `/chats/${chat}/messages`, { epoch, data, client_id }),
   events: (chat: string, after: number) =>
     request<{ events: ChatEvent[]; more: boolean }>('GET', `/chats/${chat}/events?after=${after}`),
+  setIdentity: (identity_key: string, signature: string) =>
+    request<void>('PUT', '/identity', { identity_key, signature }),
+  signDevice: (device: number, signature: string) =>
+    request<void>('PUT', `/devices/${device}/signature`, { signature }),
+  writeBackup: (chat: string, items: BackupItem[]) => request<void>('POST', `/backup/${chat}`, { items }),
+  readBackup: (chat: string, after: number) =>
+    request<{ items: BackupItem[]; more: boolean }>('GET', `/backup/${chat}?after=${after}`),
   welcomes: () => request<{ welcomes: Welcome[] }>('GET', '/welcomes'),
   ackWelcome: (id: number) => request<void>('DELETE', `/welcomes/${id}`),
 }

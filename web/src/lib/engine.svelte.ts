@@ -5,7 +5,7 @@
 // (key packages) or encrypted (messages, key changes). Decrypted messages
 // and private keys stay in the browser's own storage.
 
-import init, { Device } from '../../wasm/harmony_crypto'
+import init, { Device, openBackup, Recovery, safetyNumber, sealBackup, verifyDevice } from '../../wasm/harmony_crypto'
 import wasmUrl from '../../wasm/harmony_crypto_bg.wasm?url'
 import {
   api,
@@ -18,9 +18,20 @@ import {
   type User,
   type UserInfo,
 } from './api'
-import { Store, type StoredChat, type StoredMessage } from './store'
+import { Store, type StoredChat, type StoredMessage, type TrustRecord } from './store'
 
 const ONE_TIME_KEY_PACKAGES = 20
+const BACKUP_BATCH = 100
+
+/**
+ * How far this device can vouch for another person:
+ * - `verified`: safety numbers were compared and nothing has changed since.
+ * - `unverified`: nothing looks wrong, but nobody has compared safety numbers.
+ * - `changed`: their identity key is not the one this device remembers.
+ * - `unconfirmed`: a device of theirs in the chat is not signed by their identity key.
+ * - `none`: they have not set up a recovery code, so nothing can be checked.
+ */
+export type TrustStatus = 'verified' | 'unverified' | 'changed' | 'unconfirmed' | 'none'
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
@@ -46,10 +57,28 @@ export class Engine {
   /** Messages of the chats opened so far. */
   messages = $state<Record<string, StoredMessage[]>>({})
   activeChat = $state<string | null>(null)
+  /**
+   * Where this device stands with the person's recovery code: `setup` (they
+   * have none yet), `code` (they have one; it has not been entered here),
+   * `skipped` (they chose to enter it later) or `ready`.
+   */
+  recovery = $state<'unknown' | 'setup' | 'code' | 'skipped' | 'ready'>('unknown')
+  /** Bringing back history from the backup. */
+  restoring = $state(false)
+  /** Identity keys this device remembers for other people, by user id. */
+  trust = $state<Record<number, TrustRecord>>({})
+  /** Per chat: people with a device in it that their identity key does not vouch for. */
+  unconfirmed = $state<Record<string, number[]>>({})
 
   private device!: Device
   private deviceId = 0
   private identity = ''
+  private identityKey: Uint8Array | undefined
+  private backupKey: Uint8Array | undefined
+  private recoverySkipped = false
+  private backupTimer: ReturnType<typeof setTimeout> | null = null
+  private backingUp = false
+  private signatureChecks = new Map<string, boolean>()
   private store!: Store
   private socket: WebSocket | null = null
   private stopped = false
@@ -73,6 +102,7 @@ export class Engine {
       this.store = await Store.open(this.me.id)
       await this.loadOrCreateDevice()
       for (const chat of await this.store.chats()) this.meta[chat.chatId] = chat
+      for (const record of await this.store.trust()) this.trust[record.userId] = record
       await this.topUpKeyPackages()
       this.connect()
       await this.refresh('all')
@@ -86,6 +116,7 @@ export class Engine {
 
   stop() {
     this.stopped = true
+    if (this.backupTimer) clearTimeout(this.backupTimer)
     this.socket?.close()
     this.store?.close()
     this.releaseLock?.()
@@ -119,6 +150,9 @@ export class Engine {
         this.device = Device.restore(saved.state)
         this.deviceId = saved.deviceId
         this.identity = saved.identity
+        this.identityKey = saved.identityKey
+        this.backupKey = saved.backupKey
+        this.recoverySkipped = saved.recoverySkipped ?? false
         return
       } catch (err) {
         // 403: the server no longer knows this device (it was signed out
@@ -156,7 +190,14 @@ export class Engine {
 
   private persist(changes: { chats?: StoredChat[]; messages?: StoredMessage[]; deleteChats?: string[] } = {}) {
     return this.store.save({
-      device: { deviceId: this.deviceId, identity: this.identity, state: this.device.exportState() },
+      device: {
+        deviceId: this.deviceId,
+        identity: this.identity,
+        state: this.device.exportState(),
+        identityKey: this.identityKey,
+        backupKey: this.backupKey,
+        recoverySkipped: this.recoverySkipped,
+      },
       ...changes,
     })
   }
@@ -239,6 +280,8 @@ export class Engine {
     const [users, chats] = await Promise.all([api.users(), api.chats()])
     this.users = users
     this.chats = chats
+    await this.checkRecovery()
+    await this.rememberIdentities()
 
     // Chats we are no longer in: forget their keys and messages.
     const current = new Set(chats.map((c) => c.id))
@@ -256,6 +299,8 @@ export class Engine {
         .filter((c) => dirty === 'all' || dirty.has(c.id) || c.last_seq > this.metaFor(c.id).cursor)
         .map((c) => this.enqueue(c.id, () => this.syncChat(c)).catch((err) => console.error('chat sync failed', c.id, err))),
     )
+    this.checkDevices()
+    this.backupSoon()
   }
 
   private enqueue<T>(chatId: string, step: () => Promise<T>): Promise<T> {
@@ -483,6 +528,289 @@ export class Engine {
     return true
   }
 
+  // -- recovery code, verification and backup ----------------------------------
+
+  /** Works out where this device stands with the person's recovery code. */
+  private async checkRecovery() {
+    const mine = this.users.find((u) => u.id === this.me.id)
+    const serverKey = mine?.identity_key ?? null
+    const signed = !!mine?.devices.find((d) => d.id === this.deviceId)?.signature
+    if (serverKey && signed && this.identityKey && toBase64(this.identityKey) === serverKey) {
+      this.recovery = 'ready'
+      return
+    }
+    if (this.identityKey || this.backupKey) {
+      // The identity was replaced from another device: the keys held here are stale.
+      this.identityKey = undefined
+      this.backupKey = undefined
+      this.recoverySkipped = false
+      await this.persist()
+    }
+    this.recovery = !serverKey ? 'setup' : this.recoverySkipped ? 'skipped' : 'code'
+  }
+
+  /** Remembers each person's identity key the first time it is seen. */
+  private async rememberIdentities() {
+    const fresh: TrustRecord[] = []
+    for (const user of this.users) {
+      if (user.id === this.me.id || !user.identity_key || this.trust[user.id]) continue
+      const record = { userId: user.id, identityKey: user.identity_key, verified: false }
+      this.trust[user.id] = record
+      fresh.push(record)
+    }
+    if (fresh.length) await this.store.save({ trust: fresh })
+  }
+
+  /** The identity key this device is prepared to check a person's devices against. */
+  private trustedKey(userId: number): string | null {
+    if (userId === this.me.id) return this.identityKey ? toBase64(this.identityKey) : null
+    const current = this.users.find((u) => u.id === userId)?.identity_key ?? null
+    const remembered = this.trust[userId]?.identityKey ?? null
+    return current && current === remembered ? current : null
+  }
+
+  /**
+   * Checks every device in every chat against its owner's identity key.
+   * The device list comes from the chat's own key group, not from the
+   * server, so a device slipped in by the server shows up here.
+   */
+  private checkDevices() {
+    const result: Record<string, number[]> = {}
+    for (const chat of this.chats) {
+      if (!chat.joined || !this.device.hasChat(chat.id)) continue
+      const flagged = new Set<number>()
+      for (const [identity, deviceKey] of this.device.memberKeys(chat.id) as [string, Uint8Array][]) {
+        if (identity === this.identity) continue
+        const match = /^u(\d+):d\d+$/.exec(identity)
+        if (!match) continue
+        const userId = Number(match[1])
+        // Our own other devices can only be judged once this one has the code.
+        if (userId === this.me.id && !this.identityKey) continue
+        const key = this.trustedKey(userId)
+        const signature = this.users
+          .find((u) => u.id === userId)
+          ?.devices.find((d) => d.identity === identity)?.signature
+        if (!key || !signature || !this.signatureHolds(key, identity, deviceKey, signature)) flagged.add(userId)
+      }
+      if (flagged.size) result[chat.id] = [...flagged]
+    }
+    this.unconfirmed = result
+  }
+
+  private signatureHolds(key: string, identity: string, deviceKey: Uint8Array, signature: string): boolean {
+    const id = `${key}|${identity}|${toBase64(deviceKey)}|${signature}`
+    let holds = this.signatureChecks.get(id)
+    if (holds === undefined) {
+      try {
+        holds = verifyDevice(fromBase64(key), identity, deviceKey, fromBase64(signature))
+      } catch {
+        holds = false
+      }
+      this.signatureChecks.set(id, holds)
+    }
+    return holds
+  }
+
+  /** How far this device can vouch for a person, in a given chat if one is named. */
+  trustStatus(userId: number, chatId?: string): TrustStatus {
+    const current = this.users.find((u) => u.id === userId)?.identity_key ?? null
+    const remembered = this.trust[userId]
+    if (remembered && remembered.identityKey !== current) return 'changed'
+    if (!current) return 'none'
+    if (chatId && this.unconfirmed[chatId]?.includes(userId)) return 'unconfirmed'
+    return remembered?.verified ? 'verified' : 'unverified'
+  }
+
+  /** People in a chat whose status calls for a warning, with ourselves last. */
+  chatWarnings(chat: ChatInfo): { userId: number; status: 'changed' | 'unconfirmed' }[] {
+    const warnings: { userId: number; status: 'changed' | 'unconfirmed' }[] = []
+    for (const member of chat.members) {
+      if (member.user_id === this.me.id) continue
+      const status = this.trustStatus(member.user_id, chat.id)
+      if (status === 'changed' || status === 'unconfirmed') warnings.push({ userId: member.user_id, status })
+    }
+    if (this.unconfirmed[chat.id]?.includes(this.me.id)) warnings.push({ userId: this.me.id, status: 'unconfirmed' })
+    return warnings
+  }
+
+  /** The number to compare with a friend, or null if either side has no identity key yet. */
+  safetyNumber(userId: number): string | null {
+    const theirs = this.users.find((u) => u.id === userId)?.identity_key
+    if (!this.identityKey || !theirs) return null
+    return safetyNumber(this.me.id, this.identityKey, userId, fromBase64(theirs))
+  }
+
+  /** Records that safety numbers were compared with this person (or takes that back). */
+  async setVerified(userId: number, verified: boolean) {
+    const current = this.users.find((u) => u.id === userId)?.identity_key
+    if (!current) return
+    const record = { userId, identityKey: current, verified }
+    this.trust[userId] = record
+    await this.store.save({ trust: [record] })
+    this.checkDevices()
+  }
+
+  /** Accepts a person's changed identity key as the one to remember, unverified. */
+  async acceptIdentity(userId: number) {
+    const current = this.users.find((u) => u.id === userId)?.identity_key
+    if (current) {
+      await this.setVerified(userId, false)
+    } else {
+      delete this.trust[userId]
+      await this.store.save({ deleteTrust: [userId] })
+    }
+  }
+
+  /** A fresh recovery code, to show the person before it is put to use. */
+  newRecoveryCode(): string {
+    return Recovery.generate().code
+  }
+
+  /**
+   * Puts a new recovery code to use: the first one, or a replacement after
+   * the old one was lost. A replacement is a new identity, so friends are
+   * asked to verify again and the backup starts over from this device.
+   */
+  async useNewRecoveryCode(code: string) {
+    const recovery = Recovery.fromCode(code)
+    const identityKey = recovery.identityKey()
+    const signature = recovery.signDevice(this.identity, this.device.signaturePublicKey())
+    await api.setIdentity(toBase64(identityKey), toBase64(signature))
+    this.identityKey = identityKey
+    this.backupKey = recovery.backupKey()
+    this.recoverySkipped = false
+    await this.persist()
+    // The server dropped any backup made under the old code.
+    await this.store.setBackedUp('all', false)
+    this.recovery = 'ready'
+    await this.refresh('all')
+  }
+
+  /** Confirms this device with the person's existing recovery code and brings back their history. */
+  async enterRecoveryCode(code: string) {
+    const recovery = Recovery.fromCode(code)
+    const identityKey = recovery.identityKey()
+    const mine = (await api.users()).find((u) => u.id === this.me.id)
+    if (mine?.identity_key !== toBase64(identityKey)) {
+      throw new Error('That is not your recovery code. Check it and try again.')
+    }
+    const signature = recovery.signDevice(this.identity, this.device.signaturePublicKey())
+    await api.signDevice(this.deviceId, toBase64(signature))
+    this.identityKey = identityKey
+    this.backupKey = recovery.backupKey()
+    this.recoverySkipped = false
+    await this.persist()
+    this.recovery = 'ready'
+    await this.refresh('all')
+    await this.restoreHistory()
+  }
+
+  /** Carries on without the recovery code: no history, and friends see this device as unconfirmed. */
+  async skipRecoveryCode() {
+    this.recoverySkipped = true
+    await this.persist()
+    this.recovery = 'skipped'
+  }
+
+  private backupContext(chatId: string, seq: number): string {
+    return `u${this.me.id}/${chatId}/${seq}`
+  }
+
+  private backupSoon() {
+    if (!this.backupKey || this.backupTimer || this.stopped) return
+    this.backupTimer = setTimeout(() => {
+      this.backupTimer = null
+      void this.backupNow()
+    }, 1500)
+  }
+
+  /** Uploads encrypted copies of messages that are not in the backup yet. */
+  private async backupNow() {
+    const key = this.backupKey
+    if (!key || this.backingUp || this.stopped) return
+    this.backingUp = true
+    try {
+      const waiting = new Map<string, StoredMessage[]>()
+      for (const message of await this.store.allMessages()) {
+        if (message.backedUp || message.seq === null || message.problem) continue
+        if (!this.chats.some((c) => c.id === message.chatId)) continue
+        waiting.set(message.chatId, [...(waiting.get(message.chatId) ?? []), message])
+      }
+      for (const [chatId, messages] of waiting) {
+        for (let i = 0; i < messages.length; i += BACKUP_BATCH) {
+          const batch = messages.slice(i, i + BACKUP_BATCH)
+          const items = batch.map((m) => ({
+            seq: m.seq!,
+            data: toBase64(
+              sealBackup(
+                key,
+                this.backupContext(chatId, m.seq!),
+                encoder.encode(JSON.stringify({ u: m.senderUser, b: m.body, t: m.sentAt })),
+              ),
+            ),
+          }))
+          await api.writeBackup(chatId, items)
+          await this.store.setBackedUp(batch.map((m) => m.key), true)
+        }
+      }
+    } catch (err) {
+      console.error('backup failed', err)
+    } finally {
+      this.backingUp = false
+    }
+  }
+
+  /** Brings back, from the backup, messages this device does not have. */
+  private async restoreHistory() {
+    this.restoring = true
+    try {
+      for (const chat of this.chats) {
+        await this.enqueue(chat.id, () => this.restoreChat(chat.id)).catch((err) =>
+          console.error('could not restore chat', chat.id, err),
+        )
+      }
+    } finally {
+      this.restoring = false
+    }
+  }
+
+  private async restoreChat(chatId: string) {
+    const key = this.backupKey
+    if (!key) return
+    const local = new Map((await this.store.messages(chatId)).map((m) => [m.seq, m]))
+    const restored: StoredMessage[] = []
+    for (let after = 0; ; ) {
+      const page = await api.readBackup(chatId, after)
+      for (const item of page.items) {
+        after = item.seq
+        const existing = local.get(item.seq)
+        if (existing && !existing.problem) continue
+        try {
+          const plain = JSON.parse(
+            decoder.decode(openBackup(key, this.backupContext(chatId, item.seq), fromBase64(item.data))),
+          )
+          if (typeof plain?.u !== 'number' || typeof plain.b !== 'string' || typeof plain.t !== 'number') continue
+          restored.push({
+            key: existing?.key ?? `${chatId}/#${item.seq}`,
+            chatId,
+            seq: item.seq,
+            senderUser: plain.u,
+            body: plain.b,
+            sentAt: plain.t,
+            backedUp: true,
+          })
+        } catch (err) {
+          console.error('could not read backup item', chatId, item.seq, err)
+        }
+      }
+      if (!page.more || !page.items.length) break
+    }
+    if (restored.length) {
+      await this.store.save({ messages: restored })
+      restored.forEach((m) => this.showMessage(m))
+    }
+  }
+
   // -- things the person does ------------------------------------------------
 
   async openChat(chatId: string) {
@@ -562,6 +890,7 @@ export class Engine {
             const final = { ...message, seq: sent.seq, sentAt: sent.created_at }
             await this.store.save({ messages: [final] })
             this.showMessage(final)
+            this.backupSoon()
             return
           } catch (err) {
             if (!isStatus(err, 409)) throw err

@@ -85,19 +85,55 @@ impl FromRequestParts<AppState> for DeviceAuth {
     }
 }
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize)]
+struct DeviceInfo {
+    id: i64,
+    identity: String,
+    /// The owner's signature over this device's key, if they confirmed it
+    /// with their recovery code.
+    signature: Option<String>,
+}
+
+#[derive(Serialize)]
 struct UserInfo {
     id: i64,
     username: String,
     display_name: String,
+    /// Public identity key; absent until the person sets up a recovery code.
+    identity_key: Option<String>,
+    devices: Vec<DeviceInfo>,
 }
 
 /// Everyone on this server. Harmony is one friend group, so everyone can see everyone.
 async fn list_users(State(state): State<AppState>, _user: User) -> ApiResult<Json<Vec<UserInfo>>> {
-    let users =
-        sqlx::query_as("SELECT id, username, display_name FROM users ORDER BY display_name COLLATE NOCASE")
-            .fetch_all(&state.db)
-            .await?;
+    let users: Vec<(i64, String, String, Option<Vec<u8>>)> = sqlx::query_as(
+        "SELECT id, username, display_name, identity_key FROM users ORDER BY display_name COLLATE NOCASE",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    let devices: Vec<(i64, i64, Option<Vec<u8>>)> = sqlx::query_as(
+        "SELECT id, user_id, identity_signature FROM devices WHERE revoked_at IS NULL ORDER BY id",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    let users = users
+        .into_iter()
+        .map(|(id, username, display_name, identity_key)| UserInfo {
+            id,
+            username,
+            display_name,
+            identity_key: identity_key.as_deref().map(encode),
+            devices: devices
+                .iter()
+                .filter(|(_, user_id, _)| *user_id == id)
+                .map(|(device_id, _, signature)| DeviceInfo {
+                    id: *device_id,
+                    identity: identity(id, *device_id),
+                    signature: signature.as_deref().map(encode),
+                })
+                .collect(),
+        })
+        .collect();
     Ok(Json(users))
 }
 

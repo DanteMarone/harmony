@@ -604,13 +604,17 @@ dependencies = [
 name = "harmony-crypto"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
+ "ed25519-dalek",
  "getrandom 0.2.17",
+ "hkdf 0.12.4",
  "js-sys",
  "openmls",
  "openmls_basic_credential",
  "openmls_memory_storage",
  "openmls_rust_crypto",
  "openmls_traits",
+ "sha2 0.10.9",
  "tls_codec",
  "wasm-bindgen",
 ]

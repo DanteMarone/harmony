@@ -8,6 +8,9 @@
   --accent: #4f5fe0;
   --accent-text: #ffffff;
   --danger: #c0392b;
+  --warn-bg: #fff4d6;
+  --warn-text: #6b4a00;
+  --ok: #1e7d46;
   font-family: system-ui, 'Segoe UI', sans-serif;
   font-size: 16px;
   line-height: 1.5;
@@ -23,6 +26,9 @@
     --accent: #7c89f5;
     --accent-text: #11121a;
     --danger: #ff8274;
+    --warn-bg: #3d3210;
+    --warn-text: #ffd978;
+    --ok: #6fd69a;
   }
 }
 
@@ -238,3 +244,58 @@ button.danger { color: var(--danger); }
   .sidebar { border-right: none; border-bottom: 1px solid var(--border); max-height: 40vh; }
   .chat { height: auto; }
 }
+
+/* --- Recovery code and verification --- */
+.warning {
+  padding: 0.6rem 0.8rem;
+  border-radius: 8px;
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  font-size: 0.9rem;
+}
+.warning.strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-radius: 0;
+  padding: 0.5rem 1rem;
+}
+.warning.strip button { flex: none; color: inherit; border-color: currentColor; }
+.ok { color: var(--ok); }
+button.attention { border-color: var(--warn-text); background: var(--warn-bg); color: var(--warn-text); }
+
+.recovery-code {
+  display: block;
+  margin: 0.75rem 0;
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 1.05rem;
+  letter-spacing: 0.04em;
+  text-align: center;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.code-input { font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; }
+
+.safety-number {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.4rem 0.75rem;
+  margin: 0.75rem 0;
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 1.05rem;
+  text-align: center;
+}
+
+.row-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; }
+.trust { font-size: 0.8rem; color: var(--muted); }
+.trust.verified { color: var(--ok); }
+.trust.changed, .trust.unconfirmed { color: var(--warn-text); background: var(--warn-bg); padding: 0.1rem 0.4rem; border-radius: 4px; }
