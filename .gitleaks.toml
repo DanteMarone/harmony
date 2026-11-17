@@ -1,0 +1,10 @@
+# Harmony secret-scan configuration. Uses every default gitleaks rule.
+[extend]
+useDefault = true
+
+# Cargo.lock holds only crate names, versions and public checksums. The crate
+# name "libcrux-secrets" (a dependency of OpenMLS) trips the generic-api-key
+# rule, so lock files are skipped. Nothing else is exempt.
+[allowlist]
+description = "Cargo lock files (crate names and public checksums only)"
+paths = ['''(^|/)Cargo\.lock$''']
