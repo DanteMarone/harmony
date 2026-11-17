@@ -1,0 +1,36 @@
+# --- Secrets and local configuration: never commit these ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+secrets/
+livekit.yaml
+Caddyfile.local
+
+# --- Runtime data: the database and uploads hold private data ---
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+uploads/
+backups/
+*.log
+
+# --- Build output ---
+target/
+node_modules/
+dist/
+
+# --- Editors and operating systems ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
