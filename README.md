@@ -74,6 +74,11 @@ cd web && npm run check     # type checks
 
 All settings are environment variables; see [`.env.example`](.env.example).
 
+## Running on a server
+
+See [docs/deploy.md](docs/deploy.md): a release bundle, a systemd service and a
+Caddy or nginx site for HTTPS.
+
 ## Keeping secrets out of this repository
 
 This repository is public. The rules:

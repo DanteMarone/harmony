@@ -1,0 +1,14 @@
+# Caddy site block for Harmony. Caddy gets and renews the HTTPS certificate
+# itself and passes WebSockets through without extra settings.
+# Replace the address below with your own subdomain.
+
+harmony.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8080
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+}
