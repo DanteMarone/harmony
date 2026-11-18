@@ -1,0 +1,33 @@
+# systemd unit for the LiveKit media server that carries Harmony voice calls.
+# Copy to /etc/systemd/system/livekit.service. Expects the livekit-server
+# binary in /usr/local/bin and its config (with the API secret) in
+# /etc/livekit.yaml, owned by root:livekit with mode 0640.
+
+[Unit]
+Description=LiveKit media server for Harmony
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=livekit
+Group=livekit
+ExecStart=/usr/local/bin/livekit-server --config /etc/livekit.yaml
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65536
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

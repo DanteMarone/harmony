@@ -74,17 +74,25 @@ Everything is in `/var/lib/harmony`. Stop the service (or use
 The database holds only encrypted messages, but it does hold account data, so
 keep backups private.
 
-## Voice calls (planned)
+## Voice calls
 
-Voice will use a self-hosted [LiveKit](https://livekit.io) server on the same
-machine, also behind the web server and also bound to localhost for its
-signalling port. It will need these extra firewall openings:
+Voice uses a self-hosted [LiveKit](https://livekit.io) server on the same
+machine. Follow the steps in [voice.md](voice.md#setting-up-livekit); in short:
 
-| Port | Protocol | Purpose |
-| --- | --- | --- |
-| 7881 | TCP | Media over TCP, for networks that block UDP |
-| 50000-50100 | UDP | Media (a small range is enough for a group of friends) |
-| 3478 | UDP | Built-in TURN, for friends behind strict NATs |
+- `livekit-server` listens for signalling on `127.0.0.1:7880` only, run by
+  `deploy/livekit.service` with its config in `/etc/livekit.yaml`.
+- The web server sends `/rtc*` on the Harmony site to it (already in
+  `deploy/Caddyfile`).
+- The firewall opens the media ports:
 
-Its API key and secret are generated on the server and stored only in its
-config file there, never in this repository.
+  | Port | Protocol | Purpose |
+  | --- | --- | --- |
+  | 7881 | TCP | Media over TCP, for networks that block UDP |
+  | 50000-50100 | UDP | Media |
+
+- `/etc/harmony/harmony.env` gets `HARMONY_LIVEKIT_URL`,
+  `HARMONY_LIVEKIT_API_KEY` and `HARMONY_LIVEKIT_API_SECRET`.
+
+The API secret is generated on the server and stored only in
+`/etc/livekit.yaml` and `/etc/harmony/harmony.env` there, never in this
+repository.
