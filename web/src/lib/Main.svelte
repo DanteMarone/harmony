@@ -2,6 +2,7 @@
   import { onDestroy } from 'svelte'
   import type { User } from './api'
   import Chat from './Chat.svelte'
+  import Devices from './Devices.svelte'
   import { Engine } from './engine.svelte'
   import Invites from './Invites.svelte'
   import Members from './Members.svelte'
@@ -17,7 +18,7 @@
   void engine.start()
   onDestroy(() => engine.stop())
 
-  let dialog = $state<'new' | 'members' | 'invites' | 'security' | null>(null)
+  let dialog = $state<'new' | 'members' | 'invites' | 'security' | 'devices' | null>(null)
   /** The person whose verification screen is open, on top of any other dialog. */
   let verifying = $state<number | null>(null)
   // A recovery code must be set up before anything else; entering one on a
@@ -54,6 +55,19 @@
     <p class="lead">Harmony is already open in another tab or window. Close it there, then reload this page.</p>
     <button onclick={() => location.reload()}>Reload</button>
   </main>
+{:else if engine.status === 'revoked'}
+  <main class="card">
+    <h1>Harmony</h1>
+    <p class="lead">This device was signed out, and its keys and messages were erased from this browser.</p>
+    <p class="hint">Sign in again to use it as a new device. Your recovery code brings your history back.</p>
+    <button onclick={onSignOut}>Sign in again</button>
+  </main>
+{:else if engine.status === 'signedOut'}
+  <main class="card">
+    <h1>Harmony</h1>
+    <p class="lead">You have been signed out.</p>
+    <button onclick={onSignOut}>Sign in</button>
+  </main>
 {:else if engine.status === 'error'}
   <main class="card">
     <h1>Harmony</h1>
@@ -89,6 +103,7 @@
         {:else}
           <button class="secondary" onclick={openRecovery}>Security</button>
         {/if}
+        <button class="secondary" onclick={() => (dialog = 'devices')}>Devices</button>
         {#if user.is_admin}<button class="secondary" onclick={() => (dialog = 'invites')}>Invites</button>{/if}
         <button class="secondary" onclick={onSignOut}>Sign out</button>
       </footer>
@@ -126,6 +141,8 @@
       onClose={() => (verifying = null)}
       onRecovery={openRecovery}
     />
+  {:else if dialog === 'devices'}
+    <Devices {engine} onClose={() => (dialog = null)} />
   {:else if dialog === 'security'}
     <Recovery {engine} onClose={() => (dialog = null)} />
   {/if}

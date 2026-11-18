@@ -116,17 +116,28 @@ Limits to know about:
   a person's devices.
 - A warning does not stop an unconfirmed device from receiving messages.
 
+## Signing a device out
+
+Each person can see their signed-in devices (with a name they choose and when
+each was last active, to the minute) and sign any of them out. A signed-out
+device's login session ends, its key packages and pending invitations are
+deleted, the server refuses it from then on, and the other members' devices
+remove it from every chat's key group, so it cannot read anything sent
+afterwards. If it is online it is told, and it erases its own keys and
+messages. A device can also sign itself out and erase itself.
+
+What it already decrypted and stored cannot be taken back from a device that
+is offline or tampered with: signing out protects the future, not the past.
+
 ## Not done yet
 
 These are known gaps, in rough priority order.
 
-1. **No device management.** Old devices stay in chats until removed.
-   Planned: a device list with sign-out and removal.
-2. **Unconfirmed devices are warned about, not blocked.**
-3. **Group names are visible to the server.**
-4. **Keys at rest are not encrypted** beyond what the browser and operating
+1. **Unconfirmed devices are warned about, not blocked.**
+2. **Group names are visible to the server.**
+3. **Keys at rest are not encrypted** beyond what the browser and operating
    system provide.
-5. **The web app is delivered by the server.** Someone in control of the
+4. **The web app is delivered by the server.** Someone in control of the
    server could serve altered code. A strict Content-Security-Policy limits
    injection, and the planned desktop app ships its code separately.
-6. **No independent security review** has been done.
+5. **No independent security review** has been done.

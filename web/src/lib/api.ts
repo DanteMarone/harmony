@@ -37,6 +37,14 @@ export interface UserInfo {
   devices: DeviceInfo[]
 }
 
+export interface OwnDevice {
+  id: number
+  name: string | null
+  created_at: number
+  /** Rounded to the minute. */
+  last_seen_at: number | null
+}
+
 export interface BackupItem {
   seq: number
   data: string
@@ -142,7 +150,10 @@ export const api = {
   revokeInvite: (id: number) => request<void>('DELETE', `/invites/${id}`),
 
   users: () => request<UserInfo[]>('GET', '/users'),
-  createDevice: () => request<{ id: number; identity: string }>('POST', '/devices'),
+  createDevice: (name: string) => request<{ id: number; identity: string }>('POST', '/devices', { name }),
+  listDevices: () => request<OwnDevice[]>('GET', '/devices'),
+  renameDevice: (device: number, name: string) => request<void>('PUT', `/devices/${device}/name`, { name }),
+  revokeDevice: (device: number) => request<void>('DELETE', `/devices/${device}`),
   keyPackageCount: (device: number) =>
     request<{ one_time: number; last_resort: boolean }>('GET', `/devices/${device}/key-packages`),
   uploadKeyPackages: (device: number, one_time: string[], last_resort?: string) =>
