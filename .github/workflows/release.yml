@@ -1,0 +1,68 @@
+name: Release
+
+# Builds a ready-to-run Linux bundle (server binary + built web app) and
+# attaches it to a GitHub release, so the server never has to compile anything.
+# Start it by pushing a tag such as v0.1.0.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # musl gives a fully static binary that runs on any x86-64 Linux,
+          # whatever its glibc version.
+          targets: x86_64-unknown-linux-musl, wasm32-unknown-unknown
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            server
+            crypto
+          cache-bin: true
+
+      - name: Build the server
+        working-directory: server
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - run: cargo install wasm-bindgen-cli --version 0.2.130 --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build the web app
+        working-directory: web
+        run: npm ci && npm run build
+
+      - name: Package
+        run: |
+          name="harmony-${TAG}-linux-x86_64"
+          mkdir -p "dist/$name"
+          cp server/target/x86_64-unknown-linux-musl/release/harmony-server "dist/$name/"
+          cp -r web/dist "dist/$name/web"
+          cp -r deploy LICENSE "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; not replacing it."
+            exit 0
+          fi
+          gh release create "$TAG" dist/*.tar.gz dist/*.sha256 \
+            --target "$GITHUB_SHA" --title "$TAG" --generate-notes

@@ -1,0 +1,47 @@
+# systemd unit for the Harmony server. install.sh copies this to
+# /etc/systemd/system/harmony.service.
+
+[Unit]
+Description=Harmony chat server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=harmony
+Group=harmony
+WorkingDirectory=/opt/harmony/current
+ExecStart=/opt/harmony/current/harmony-server
+EnvironmentFile=/etc/harmony/harmony.env
+Restart=on-failure
+RestartSec=3
+
+# The database lives in /var/lib/harmony (created and owned by systemd).
+StateDirectory=harmony
+StateDirectoryMode=0700
+
+# Hardening: the server only needs its data folder and a localhost port.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
