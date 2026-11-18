@@ -227,6 +227,16 @@ impl Device {
             .collect()
     }
 
+    /// Every device in the chat with the public signature key it uses
+    /// there. Checked against each owner's identity key to spot devices
+    /// that were added without their owner's say-so.
+    pub fn member_keys(&self, chat_id: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        self.group(chat_id)?
+            .members()
+            .map(|m| Ok((identity_of(&m.credential)?, m.signature_key)))
+            .collect()
+    }
+
     /// Adds and removes devices in one step.
     ///
     /// `add` pairs each key package with the identity the server claims it

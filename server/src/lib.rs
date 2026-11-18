@@ -7,6 +7,7 @@ pub mod db;
 pub mod devices;
 pub mod error;
 pub mod hub;
+pub mod recovery;
 
 use std::sync::Arc;
 
@@ -54,7 +55,8 @@ pub fn app(state: AppState) -> Router {
         .route("/ws", get(hub::connect))
         .merge(auth::routes())
         .merge(devices::routes())
-        .merge(chats::routes());
+        .merge(chats::routes())
+        .merge(recovery::routes());
 
     let web_dir = state.config.web_dir.clone();
     let web = ServeDir::new(&web_dir).fallback(ServeFile::new(web_dir.join("index.html")));

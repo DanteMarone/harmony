@@ -27,6 +27,8 @@ pub enum Notice {
     Chats,
     /// An invitation to join a chat is waiting for this device.
     Welcome,
+    /// Someone's identity key or device signatures changed.
+    Users,
 }
 
 #[derive(Clone, Debug)]

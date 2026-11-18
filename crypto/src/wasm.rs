@@ -3,7 +3,10 @@
 use js_sys::{Array, Uint8Array};
 use wasm_bindgen::prelude::*;
 
-use crate::device::{Device, Error, Processed};
+use crate::{
+    device::{Device, Error, Processed},
+    recovery::{self, Recovery},
+};
 
 fn js(error: Error) -> JsError {
     JsError::new(&error.0)
@@ -115,6 +118,23 @@ impl WasmDevice {
         self.0.members(chat_id).map_err(js)
     }
 
+    /// Returns an array of `[identity, signatureKey]` pairs, one per device in the chat.
+    #[wasm_bindgen(js_name = memberKeys)]
+    pub fn member_keys(&self, chat_id: &str) -> Result<Array, JsError> {
+        Ok(self
+            .0
+            .member_keys(chat_id)
+            .map_err(js)?
+            .into_iter()
+            .map(|(identity, key)| {
+                JsValue::from(Array::of2(
+                    &JsValue::from(identity),
+                    &Uint8Array::from(key.as_slice()).into(),
+                ))
+            })
+            .collect())
+    }
+
     /// `add_identities[i]` is the identity the server claims for `add_key_packages[i]`.
     #[wasm_bindgen(js_name = changeMembers)]
     pub fn change_members(
@@ -175,4 +195,66 @@ impl WasmDevice {
     pub fn export_secret(&self, chat_id: &str, label: &str, length: usize) -> Result<Vec<u8>, JsError> {
         self.0.export_secret(chat_id, label, length).map_err(js)
     }
+}
+
+/// A recovery code and the keys derived from it. See `recovery.rs`.
+#[wasm_bindgen(js_name = Recovery)]
+pub struct WasmRecovery(Recovery);
+
+#[wasm_bindgen(js_class = Recovery)]
+impl WasmRecovery {
+    pub fn generate() -> Result<WasmRecovery, JsError> {
+        Recovery::generate().map(WasmRecovery).map_err(js)
+    }
+
+    #[wasm_bindgen(js_name = fromCode)]
+    pub fn from_code(code: &str) -> Result<WasmRecovery, JsError> {
+        Recovery::from_code(code).map(WasmRecovery).map_err(js)
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn code(&self) -> String {
+        self.0.code()
+    }
+
+    #[wasm_bindgen(js_name = identityKey)]
+    pub fn identity_key(&self) -> Vec<u8> {
+        self.0.identity_key()
+    }
+
+    #[wasm_bindgen(js_name = signDevice)]
+    pub fn sign_device(&self, device_identity: &str, device_key: &[u8]) -> Vec<u8> {
+        self.0.sign_device(device_identity, device_key)
+    }
+
+    #[wasm_bindgen(js_name = backupKey)]
+    pub fn backup_key(&self) -> Vec<u8> {
+        self.0.backup_key()
+    }
+}
+
+#[wasm_bindgen(js_name = verifyDevice)]
+pub fn verify_device(
+    identity_key: &[u8],
+    device_identity: &str,
+    device_key: &[u8],
+    signature: &[u8],
+) -> bool {
+    recovery::verify_device(identity_key, device_identity, device_key, signature)
+}
+
+/// User ids are plain numbers (they stay far below 2^53).
+#[wasm_bindgen(js_name = safetyNumber)]
+pub fn safety_number(user_a: f64, key_a: &[u8], user_b: f64, key_b: &[u8]) -> String {
+    recovery::safety_number((user_a as u64, key_a), (user_b as u64, key_b))
+}
+
+#[wasm_bindgen(js_name = sealBackup)]
+pub fn seal_backup(key: &[u8], context: &str, plaintext: &[u8]) -> Result<Vec<u8>, JsError> {
+    recovery::seal(key, context, plaintext).map_err(js)
+}
+
+#[wasm_bindgen(js_name = openBackup)]
+pub fn open_backup(key: &[u8], context: &str, sealed: &[u8]) -> Result<Vec<u8>, JsError> {
+    recovery::open(key, context, sealed).map_err(js)
 }

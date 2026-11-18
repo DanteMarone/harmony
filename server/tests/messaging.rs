@@ -7,7 +7,10 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
-use harmony_crypto::{Device, Processed};
+use harmony_crypto::{
+    Device, Processed,
+    recovery::{self, Recovery},
+};
 use harmony_server::{AppState, app, auth, config::Config};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -619,4 +622,302 @@ async fn a_device_that_lost_its_keys_is_let_back_in() {
     assert_eq!(alice.send(&chat, "welcome back").await, StatusCode::CREATED);
     let (texts, _) = bob.read(&chat, cursor).await;
     assert_eq!(texts, ["welcome back"]);
+}
+
+/// Finds one person in the `/api/users` listing.
+async fn user_info(client: &Client, user_id: i64) -> Value {
+    client
+        .ok("GET", "/api/users", None)
+        .await
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"].as_i64() == Some(user_id))
+        .unwrap()
+        .clone()
+}
+
+/// Whether, by the server's listing, `device` is vouched for by its owner's identity key.
+fn vouched(user: &Value, device: &Client) -> bool {
+    let Some(identity_key) = user["identity_key"].as_str() else {
+        return false;
+    };
+    let entry = user["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"].as_i64() == Some(device.device_id))
+        .unwrap();
+    let Some(signature) = entry["signature"].as_str() else {
+        return false;
+    };
+    recovery::verify_device(
+        &B64.decode(identity_key).unwrap(),
+        entry["identity"].as_str().unwrap(),
+        &device.mls.signature_public_key(),
+        &B64.decode(signature).unwrap(),
+    )
+}
+
+async fn set_identity(client: &Client, code: &Recovery) -> StatusCode {
+    let signature = code.sign_device(client.mls.identity(), &client.mls.signature_public_key());
+    client
+        .call(
+            "PUT",
+            "/api/identity",
+            Some(json!({
+                "identity_key": B64.encode(code.identity_key()),
+                "signature": B64.encode(signature),
+            })),
+        )
+        .await
+        .0
+}
+
+#[tokio::test]
+async fn devices_are_vouched_for_with_the_recovery_code() {
+    let s = server().await;
+    let bootstrap = auth::bootstrap_invite(&s.state.db).await.unwrap().unwrap();
+    let alice = Client::join_server(&s, &bootstrap, "alice").await;
+    let bob = Client::join_server(&s, &invite(&alice).await, "bob").await;
+
+    // Before any recovery code exists, nothing is vouched for and a device
+    // cannot be signed.
+    let info = user_info(&bob, alice.user_id).await;
+    assert_eq!(info["identity_key"], Value::Null);
+    assert!(!vouched(&info, &alice));
+    let (status, _) = alice
+        .call(
+            "PUT",
+            &format!("/api/devices/{}/signature", alice.device_id),
+            Some(json!({ "signature": B64.encode([0u8; 64]) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Alice sets up her recovery code; Bob can now check her device himself.
+    let code = Recovery::generate().unwrap();
+    assert_eq!(set_identity(&alice, &code).await, StatusCode::NO_CONTENT);
+    let info = user_info(&bob, alice.user_id).await;
+    assert_eq!(
+        info["identity_key"].as_str().unwrap(),
+        B64.encode(code.identity_key())
+    );
+    assert!(vouched(&info, &alice));
+
+    // A second device of Alice's is listed but not vouched for until she
+    // types the code on it.
+    let phone = Client::new_device(&s, alice.cookie.clone(), alice.user_id).await;
+    let info = user_info(&bob, alice.user_id).await;
+    assert_eq!(info["devices"].as_array().unwrap().len(), 2);
+    assert!(!vouched(&info, &phone));
+    let typed = Recovery::from_code(&code.code()).unwrap();
+    let signature = typed.sign_device(phone.mls.identity(), &phone.mls.signature_public_key());
+    phone
+        .ok(
+            "PUT",
+            &format!("/api/devices/{}/signature", phone.device_id),
+            Some(json!({ "signature": B64.encode(&signature) })),
+        )
+        .await;
+    let info = user_info(&bob, alice.user_id).await;
+    assert!(vouched(&info, &phone) && vouched(&info, &alice));
+
+    // Nobody can sign for a device that is not the one they are using.
+    let (status, _) = alice
+        .call(
+            "PUT",
+            &format!("/api/devices/{}/signature", phone.device_id),
+            Some(json!({ "signature": B64.encode(&signature) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = bob
+        .call(
+            "PUT",
+            &format!("/api/devices/{}/signature", phone.device_id),
+            Some(json!({ "signature": B64.encode(&signature) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // A signature the server made up (or moved from another device) is
+    // stored, but fails the check Bob's device runs.
+    sqlx::query("UPDATE devices SET identity_signature = ? WHERE id = ?")
+        .bind(&signature)
+        .bind(alice.device_id)
+        .execute(&s.state.db)
+        .await
+        .unwrap();
+    assert!(!vouched(&user_info(&bob, alice.user_id).await, &alice));
+
+    // Starting over with a new code replaces the identity and un-signs the
+    // other devices.
+    let fresh = Recovery::generate().unwrap();
+    assert_eq!(set_identity(&phone, &fresh).await, StatusCode::NO_CONTENT);
+    let info = user_info(&bob, alice.user_id).await;
+    assert_eq!(
+        info["identity_key"].as_str().unwrap(),
+        B64.encode(fresh.identity_key())
+    );
+    assert!(vouched(&info, &phone));
+    assert!(!vouched(&info, &alice));
+
+    // Malformed keys and signatures are refused.
+    let (status, _) = alice
+        .call(
+            "PUT",
+            "/api/identity",
+            Some(json!({ "identity_key": B64.encode([1u8; 31]), "signature": B64.encode([0u8; 64]) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn history_backup_is_private_and_restorable() {
+    let s = server().await;
+    let bootstrap = auth::bootstrap_invite(&s.state.db).await.unwrap().unwrap();
+    let alice = Client::join_server(&s, &bootstrap, "alice").await;
+    let bob = Client::join_server(&s, &invite(&alice).await, "bob").await;
+    let carol = Client::join_server(&s, &invite(&alice).await, "carol").await;
+
+    let created = alice
+        .ok(
+            "POST",
+            "/api/chats",
+            Some(json!({ "kind": "group", "name": "plans", "member_ids": [bob.user_id] })),
+        )
+        .await;
+    let chat = created["chat"]["id"].as_str().unwrap().to_owned();
+    alice.mls.create_chat(&chat).unwrap();
+    assert!(alice.reconcile(&chat).await);
+    let after = bob.accept_welcomes().await[0].1;
+    assert_eq!(alice.send(&chat, "first").await, StatusCode::CREATED);
+    assert_eq!(alice.send(&chat, "second").await, StatusCode::CREATED);
+    let (texts, _) = bob.read(&chat, after).await;
+    assert_eq!(texts, ["first", "second"]);
+
+    // Bob backs up what he read, encrypted with a key only his code gives.
+    let code = Recovery::generate().unwrap();
+    assert_eq!(set_identity(&bob, &code).await, StatusCode::NO_CONTENT);
+    let key = code.backup_key();
+    let events = bob
+        .ok("GET", &format!("/api/chats/{chat}/events?after={after}"), None)
+        .await;
+    let seqs: Vec<i64> = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["seq"].as_i64().unwrap())
+        .collect();
+    let items: Vec<Value> = seqs
+        .iter()
+        .zip(&texts)
+        .map(|(seq, text)| {
+            let context = format!("u{}/{chat}/{seq}", bob.user_id);
+            json!({ "seq": seq, "data": B64.encode(recovery::seal(&key, &context, text.as_bytes()).unwrap()) })
+        })
+        .collect();
+    let path = format!("/api/backup/{chat}");
+    bob.ok("POST", &path, Some(json!({ "items": items }))).await;
+
+    // Backing up again (say, from a second device) keeps the first copy.
+    let again = json!({ "items": [{ "seq": seqs[0], "data": B64.encode(b"different") }] });
+    bob.ok("POST", &path, Some(again)).await;
+
+    // A new device of Bob's, given the code, reads the history back.
+    let laptop = Client::new_device(&s, bob.cookie.clone(), bob.user_id).await;
+    let key = Recovery::from_code(&code.code()).unwrap().backup_key();
+    let backup = laptop.ok("GET", &path, None).await;
+    assert_eq!(backup["more"], false);
+    let restored: Vec<String> = backup["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            let context = format!("u{}/{chat}/{}", bob.user_id, item["seq"]);
+            let sealed = B64.decode(item["data"].as_str().unwrap()).unwrap();
+            String::from_utf8(recovery::open(&key, &context, &sealed).unwrap()).unwrap()
+        })
+        .collect();
+    assert_eq!(restored, ["first", "second"]);
+    let later = laptop.ok("GET", &format!("{path}?after={}", seqs[0]), None).await;
+    assert_eq!(later["items"].as_array().unwrap().len(), 1);
+
+    // The server's copy is ciphertext.
+    let stored: Vec<(Vec<u8>,)> = sqlx::query_as("SELECT data FROM backup_messages")
+        .fetch_all(&s.state.db)
+        .await
+        .unwrap();
+    assert_eq!(stored.len(), 2);
+    for (data,) in stored {
+        assert!(!data.windows(5).any(|w| w == b"first" || w == b"secon"));
+    }
+
+    // Each person only ever sees their own backup; outsiders see nothing.
+    let alices = alice.ok("GET", &path, None).await;
+    assert!(alices["items"].as_array().unwrap().is_empty());
+    assert_eq!(carol.call("GET", &path, None).await.0, StatusCode::NOT_FOUND);
+    let (status, _) = carol
+        .call(
+            "POST",
+            &path,
+            Some(json!({ "items": [{ "seq": seqs[0], "data": "AAAA" }] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Only real messages of this chat can be backed up.
+    let (status, _) = bob
+        .call(
+            "POST",
+            &path,
+            Some(json!({ "items": [{ "seq": 9999, "data": "AAAA" }] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let commit_seq = seqs[0] - 1; // the key change that added Bob
+    bob.ok(
+        "POST",
+        &path,
+        Some(json!({ "items": [{ "seq": commit_seq, "data": "AAAA" }] })),
+    )
+    .await;
+    let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM backup_messages")
+        .fetch_one(&s.state.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 2);
+
+    // Starting over with a new code drops the old backup.
+    assert_eq!(
+        set_identity(&bob, &Recovery::generate().unwrap()).await,
+        StatusCode::NO_CONTENT
+    );
+    assert!(
+        bob.ok("GET", &path, None).await["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // Leaving a chat removes that person's backup of it.
+    bob.ok(
+        "POST",
+        &path,
+        Some(json!({ "items": [{ "seq": seqs[0], "data": "AAAA" }] })),
+    )
+    .await;
+    bob.ok(
+        "DELETE",
+        &format!("/api/chats/{chat}/members/{}", bob.user_id),
+        None,
+    )
+    .await;
+    let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM backup_messages")
+        .fetch_one(&s.state.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
 }
