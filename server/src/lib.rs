@@ -1,5 +1,6 @@
 //! Harmony server: a small, private, self-hosted chat backend.
 
+pub mod attachments;
 pub mod auth;
 pub mod calls;
 pub mod chats;
@@ -60,7 +61,8 @@ pub fn app(state: AppState) -> Router {
         .merge(devices::routes())
         .merge(chats::routes())
         .merge(recovery::routes())
-        .merge(calls::routes());
+        .merge(calls::routes())
+        .merge(attachments::routes());
 
     let web_dir = state.config.web_dir.clone();
     let web = ServeDir::new(&web_dir).fallback(ServeFile::new(web_dir.join("index.html")));

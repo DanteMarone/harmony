@@ -5,6 +5,22 @@
 // is what makes past messages safe if a key later leaks), so the decrypted
 // copy kept here is the only readable one. It never leaves this device.
 
+/** A photo or file sent in a message. */
+export interface FileRef {
+  /** Where the encrypted copy waits on the server; empty until it is uploaded. */
+  id: string
+  name: string
+  /** The sender's stated type, such as `image/png`. Only shown, never trusted. */
+  type: string
+  size: number
+  /** The file's own key and nonce (base64), carried inside the encrypted message. */
+  key: string
+  iv: string
+  /** Pixel size of a photo, so the chat does not jump while it loads. */
+  width?: number
+  height?: number
+}
+
 export interface StoredMessage {
   /** `${chatId}/${clientId}` for our own messages, `${chatId}/#${seq}` for others'. */
   key: string
@@ -20,6 +36,16 @@ export interface StoredMessage {
   problem?: 'failed' | 'undecryptable'
   /** An encrypted copy is in this person's history backup on the server. */
   backedUp?: boolean
+  /** A photo or file, with `body` as its (possibly empty) caption. */
+  file?: FileRef
+  /**
+   * `ready`: the file is saved on this device. `fetching`: it is still to be
+   * picked up from the server. `gone`: this device does not have it and the
+   * server no longer does either.
+   */
+  fileState?: 'ready' | 'fetching' | 'gone'
+  /** Why a message could not be sent, when the server said. */
+  note?: string
 }
 
 export interface StoredChat {
@@ -75,7 +101,7 @@ export class Store {
 
   /** One database per account, so two people sharing a browser never mix data. */
   static async open(userId: number): Promise<Store> {
-    const request = indexedDB.open(`harmony-user-${userId}`, 2)
+    const request = indexedDB.open(`harmony-user-${userId}`, 3)
     request.onupgradeneeded = (event) => {
       const db = request.result
       if (event.oldVersion < 1) {
@@ -85,6 +111,8 @@ export class Store {
         messages.createIndex('byChat', 'chatId')
       }
       if (event.oldVersion < 2) db.createObjectStore('trust', { keyPath: 'userId' })
+      // Decrypted photos and files, by the key of the message they came in.
+      if (event.oldVersion < 3) db.createObjectStore('files')
     }
     return new Store(await wrap(request))
   }
@@ -114,16 +142,24 @@ export class Store {
     deleteChats?: string[]
     trust?: TrustRecord[]
     deleteTrust?: number[]
+    /** Decrypted files, by message key. */
+    files?: { key: string; blob: Blob }[]
   }): Promise<void> {
-    const tx = this.db.transaction(['device', 'chats', 'messages', 'trust'], 'readwrite')
+    const tx = this.db.transaction(['device', 'chats', 'messages', 'trust', 'files'], 'readwrite')
     for (const record of changes.trust ?? []) tx.objectStore('trust').put(record)
     for (const userId of changes.deleteTrust ?? []) tx.objectStore('trust').delete(userId)
     if (changes.device) tx.objectStore('device').put(changes.device, 'self')
     for (const chat of changes.chats ?? []) tx.objectStore('chats').put(chat)
     for (const message of changes.messages ?? []) tx.objectStore('messages').put(message)
-    for (const key of changes.deleteMessages ?? []) tx.objectStore('messages').delete(key)
+    for (const file of changes.files ?? []) tx.objectStore('files').put(file.blob, file.key)
+    for (const key of changes.deleteMessages ?? []) {
+      tx.objectStore('messages').delete(key)
+      tx.objectStore('files').delete(key)
+    }
     for (const chatId of changes.deleteChats ?? []) {
       tx.objectStore('chats').delete(chatId)
+      // Message keys start with the chat id and a slash.
+      tx.objectStore('files').delete(IDBKeyRange.bound(`${chatId}/`, `${chatId}/\uffff`))
       const index = tx.objectStore('messages').index('byChat')
       index.openKeyCursor(IDBKeyRange.only(chatId)).onsuccess = (event) => {
         const cursor = (event.target as IDBRequest<IDBCursor | null>).result
@@ -147,6 +183,11 @@ export class Store {
 
   async allMessages(): Promise<StoredMessage[]> {
     return wrap(this.db.transaction('messages').objectStore('messages').getAll())
+  }
+
+  /** A decrypted file saved on this device, by the key of its message. */
+  async file(key: string): Promise<Blob | undefined> {
+    return wrap(this.db.transaction('files').objectStore('files').get(key))
   }
 
   async trust(): Promise<TrustRecord[]> {

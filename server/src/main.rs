@@ -23,6 +23,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("voice calls are off: HARMONY_LIVEKIT_URL is not set");
     }
     tokio::spawn(harmony_server::calls::sweep_forever(state.clone()));
+    tokio::spawn(harmony_server::attachments::sweep_forever(state.clone()));
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("Harmony listening on http://{bind}");

@@ -30,6 +30,7 @@ async fn server(livekit: bool) -> (Router, AppState, tempfile::TempDir) {
             api_key: "harmony-test".into(),
             api_secret: SECRET.into(),
         }),
+        attachments: Default::default(),
     };
     let state = AppState::new(config).await.unwrap();
     (app(state.clone()), state, dir)

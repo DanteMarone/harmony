@@ -51,6 +51,9 @@ and what is not done yet. It is meant to be honest rather than reassuring.
 | Data | Readable by the server? |
 | --- | --- |
 | Message text | No |
+| Photos and files | No: encrypted on the sender's device, and deleted once delivered (see below) |
+| File names and types | No: they travel inside the encrypted message |
+| Which chat a file was sent to, by whom, when, and its size | Yes |
 | Key changes (commits, welcomes) | No, beyond their size |
 | Usernames and display names | Yes |
 | Who is in which chat, and group names | Yes |
@@ -128,6 +131,36 @@ messages. A device can also sign itself out and erase itself.
 
 What it already decrypted and stored cannot be taken back from a device that
 is offline or tampered with: signing out protects the future, not the past.
+
+## Photos and files
+
+Harmony passes files along; it does not host them.
+
+1. The sender's device encrypts the file with a fresh random key
+   (AES-256-GCM, through the browser's Web Crypto) and uploads only the
+   ciphertext.
+2. The key, the file's name and type travel inside an ordinary chat message,
+   so they are protected by MLS like any other message.
+3. Every receiving device downloads the ciphertext, decrypts it, keeps its own
+   copy in the browser's storage, and tells the server it has it.
+4. When every device that was in the chat at upload time has its copy, the
+   server deletes the ciphertext. Anything not picked up within 7 days is
+   deleted anyway, as is the share of a device that is signed out or a person
+   who leaves the chat.
+
+What this means in practice:
+
+- The only lasting copies are on the devices that received a file. A device
+  that is offline for longer than 7 days, a device added later, or history
+  restored with the recovery code gets the message but not the file. The
+  backup keeps a file's name and size, never the file or its key.
+- Clearing the browser's data deletes its copies. Use **Save** to keep a file
+  on disk.
+- Photos in common formats are shown in the chat. Everything else (SVG and
+  HTML included) is only offered as a download, so a file can never run code
+  in Harmony's page.
+- Limits protect the server's disk: 25 MB per file, 300 MB waiting per person
+  and 1 GB in total by default. See `.env.example` to change them.
 
 ## Not done yet
 

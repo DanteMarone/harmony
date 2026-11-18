@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte'
   import type { ChatInfo } from './api'
+  import Attachment from './Attachment.svelte'
   import type { Engine } from './engine.svelte'
   import type { StoredMessage } from './store'
   import Avatar from './Avatar.svelte'
@@ -53,6 +54,48 @@
     void engine.send(chat.id, body)
   }
 
+  // -- photos and files ---------------------------------------------------------
+
+  let picker: HTMLInputElement | undefined = $state()
+  let fileError = $state('')
+  let dragging = $state(false)
+  const canSend = $derived(chat.joined && !broken)
+
+  function sendFiles(files: Iterable<File>) {
+    fileError = ''
+    for (const file of files) {
+      engine.sendFile(chat.id, file).catch((err) => {
+        fileError = err instanceof Error ? err.message : String(err)
+      })
+    }
+  }
+
+  function picked(event: Event) {
+    const input = event.currentTarget as HTMLInputElement
+    if (input.files) sendFiles([...input.files])
+    input.value = ''
+  }
+
+  function pasted(event: ClipboardEvent) {
+    const files = [...(event.clipboardData?.files ?? [])]
+    if (!files.length || !canSend) return
+    event.preventDefault()
+    sendFiles(files)
+  }
+
+  function dragOver(event: DragEvent) {
+    if (!canSend || !event.dataTransfer?.types.includes('Files')) return
+    event.preventDefault()
+    dragging = true
+  }
+
+  function dropped(event: DragEvent) {
+    dragging = false
+    if (!canSend || !event.dataTransfer?.files.length) return
+    event.preventDefault()
+    sendFiles([...event.dataTransfer.files])
+  }
+
   function onKey(event: KeyboardEvent) {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
@@ -69,7 +112,16 @@
     newDay(i) || messages[i].senderUser !== messages[i - 1].senderUser || messages[i].sentAt - messages[i - 1].sentAt > 300
 </script>
 
-<section class="chat">
+<section
+  class="chat"
+  class:dragging
+  ondragover={dragOver}
+  ondragleave={(e) => {
+    if (e.currentTarget === e.target) dragging = false
+  }}
+  ondrop={dropped}
+  aria-label="Chat"
+>
   <header class="chat-head">
     <button class="icon-button back" aria-label="Back to chats" title="Back to chats" onclick={onBack}>
       <Icon name="back" />
@@ -166,21 +218,35 @@
         {/if}
         {#if message.problem === 'undecryptable'}
           <p class="hint">This message could not be decrypted on this device.</p>
+        {:else if message.file}
+          <Attachment {engine} {message} />
+          {#if message.body}<p class="body">{message.body}</p>{/if}
         {:else}
           <p class="body">{message.body}</p>
         {/if}
         {#if message.problem === 'failed'}
           <p class="error">
-            Not sent.
-            <button class="link" onclick={() => engine.send(chat.id, message.body, message.key)}>Try again</button>
+            Not sent{message.note ? `: ${message.note}` : ''}.
+            <button class="link" onclick={() => engine.retry(message)}>Try again</button>
           </p>
         {/if}
       </article>
     {/each}
   </div>
 
+  {#if fileError}<p class="error file-error" role="alert">{fileError}</p>{/if}
   <form class="composer" onsubmit={send}>
+    <input bind:this={picker} type="file" multiple hidden onchange={picked} />
+    <button
+      type="button"
+      class="secondary attach"
+      disabled={!canSend}
+      onclick={() => picker?.click()}
+      title="Send a photo or file"
+      aria-label="Send a photo or file">+</button
+    >
     <textarea
+      onpaste={pasted}
       bind:value={draft}
       onkeydown={onKey}
       rows="1"
@@ -194,3 +260,9 @@
     </button>
   </form>
 </section>
+
+<style>
+  .chat.dragging { outline: 2px dashed var(--accent); outline-offset: -6px; }
+  .attach { padding: 0.55rem 0.85rem; font-size: 1.1rem; line-height: 1; }
+  .file-error { margin: 0; padding: 0.4rem 1rem 0; font-size: 0.9rem; }
+</style>
