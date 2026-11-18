@@ -1,15 +1,20 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte'
+  import { onDestroy, untrack } from 'svelte'
   import type { User } from './api'
+  import Avatar from './Avatar.svelte'
   import type { Call } from './call.svelte'
   import CallBar from './CallBar.svelte'
   import Chat from './Chat.svelte'
   import Devices from './Devices.svelte'
   import { Engine } from './engine.svelte'
+  import Icon from './Icon.svelte'
+  import IncomingCall from './IncomingCall.svelte'
   import Invites from './Invites.svelte'
   import Members from './Members.svelte'
   import NewChat from './NewChat.svelte'
   import Recovery from './Recovery.svelte'
+  import Settings from './Settings.svelte'
+  import { playJoin, playLeave, startRinging } from './sounds'
   import Verify from './Verify.svelte'
 
   let { user, onSignOut }: { user: User; onSignOut: () => void } = $props()
@@ -27,6 +32,9 @@
 
   async function joinCall(chatId: string) {
     callError = ''
+    ringing = null
+    // Asking from a click is the only time browsers allow it; later calls can then alert in the background.
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') void Notification.requestPermission()
     if (call?.chatId === chatId) return
     await call?.end()
     // The call code (LiveKit) is only downloaded the first time someone joins a call.
@@ -41,15 +49,96 @@
     if (call?.status === 'ended') {
       callError = call.error
       call = null
+      playLeave()
     }
   })
+
+  // Join and leave sounds while in a call: one when this device connects, then
+  // one each time someone else comes or goes.
+  let heard: Set<string> | null = null
+  $effect(() => {
+    if (!call || call.status === 'connecting') {
+      heard = null
+      return
+    }
+    const now = new Set(call.members.map((m) => m.identity))
+    if (heard === null) playJoin()
+    else if ([...now].some((id) => !heard!.has(id))) playJoin()
+    else if ([...heard].some((id) => !now.has(id))) playLeave()
+    heard = now
+  })
+
+  // -- incoming calls --
+  // A call "rings" when a chat goes from no call to a call that this person is
+  // not in. Calls already running when Harmony opens don't ring; the chat list
+  // shows them instead.
+  let ringing = $state<{ chatId: string; callerId: number } | null>(null)
+  let seenCalls: Record<string, number[]> | null = null
+  $effect(() => {
+    const calls = engine.calls
+    if (!engine.callsEnabled) return
+    untrack(() => {
+      const before = seenCalls
+      seenCalls = calls
+      if (before) {
+        for (const [chatId, people] of Object.entries(calls)) {
+          if (!people.length || before[chatId]?.length) continue
+          if (people.includes(engine.me.id) || call?.chatId === chatId) continue
+          if (!engine.chats.some((c) => c.id === chatId)) continue
+          ringing = { chatId, callerId: people[0] }
+        }
+      }
+      // Stop ringing once the call is over, or this person joined from another device.
+      if (ringing && (!calls[ringing.chatId]?.length || calls[ringing.chatId].includes(engine.me.id))) ringing = null
+    })
+  })
+  const ringChat = $derived(ringing ? (engine.chats.find((c) => c.id === ringing!.chatId) ?? null) : null)
+
+  // While ringing: play the ringtone, flash the tab title, and show a desktop
+  // alert if Harmony is in the background. Give up after 45 seconds.
+  $effect(() => {
+    if (!ringing || !ringChat) return
+    const caller = engine.userName(ringing.callerId)
+    const stop = startRinging()
+    const title = document.title
+    let flip = false
+    const flash = setInterval(() => (document.title = (flip = !flip) ? `📞 ${caller} is calling` : title), 1000)
+    let alert: Notification | null = null
+    if (document.hidden && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      const chatId = ringing.chatId
+      alert = new Notification(`${caller} is calling`, {
+        body: ringChat.kind === 'group' ? `Voice call in # ${engine.chatTitle(ringChat)}` : 'Encrypted voice call on Harmony',
+        tag: `call-${chatId}`,
+        requireInteraction: true,
+      })
+      alert.onclick = () => {
+        window.focus()
+        open(chatId)
+      }
+    }
+    const giveUp = setTimeout(() => (ringing = null), 45_000)
+    return () => {
+      stop()
+      clearInterval(flash)
+      clearTimeout(giveUp)
+      document.title = title
+      alert?.close()
+    }
+  })
+
+  function answer() {
+    if (!ringing) return
+    const chatId = ringing.chatId
+    open(chatId)
+    void joinCall(chatId)
+  }
   // Leaving a chat, or this device being signed out, ends its call.
   $effect(() => {
     if (call && (engine.status !== 'ready' || (engine.chats.length && !callChat))) void call.end()
   })
   onDestroy(() => void call?.end())
 
-  let dialog = $state<'new' | 'members' | 'invites' | 'security' | 'devices' | null>(null)
+  let dialog = $state<'new' | 'members' | 'invites' | 'security' | 'devices' | 'settings' | null>(null)
   /** The person whose verification screen is open, on top of any other dialog. */
   let verifying = $state<number | null>(null)
   // A recovery code must be set up before anything else; entering one on a
@@ -72,11 +161,29 @@
   document.addEventListener('visibilitychange', onVisible)
   onDestroy(() => document.removeEventListener('visibilitychange', onVisible))
 
+  /** On a narrow screen only one pane fits: the chat list, or the open chat. */
+  let showList = $state(true)
+
+  function open(chatId: string) {
+    showList = false
+    void engine.openChat(chatId)
+  }
+
   function newChatDone(chatId: string | null) {
     dialog = null
-    if (chatId) void engine.openChat(chatId)
+    if (chatId) open(chatId)
+  }
+
+  // Esc closes the topmost dialog. The recovery code set-up can't be skipped this way.
+  function onKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Escape' || mustRecover) return
+    if (ringing) ringing = null
+    else if (verifying !== null) verifying = null
+    else if (dialog) dialog = null
   }
 </script>
+
+<svelte:window onkeydown={onKeydown} />
 
 {#if engine.status === 'starting'}
   <main class="card"><p class="lead">Setting up encryption on this device…</p></main>
@@ -106,50 +213,69 @@
     <button onclick={() => location.reload()}>Try again</button>
   </main>
 {:else}
-  <div class="layout">
+  <div class="layout" class:chat-open={active && !showList}>
     <aside class="sidebar">
       <header>
-        <strong>Harmony</strong>
-        <button onclick={() => (dialog = 'new')}>New chat</button>
+        <span class="brand">Harmony</span>
+        <button class="icon-button" title="New chat" aria-label="New chat" onclick={() => (dialog = 'new')}>
+          <Icon name="plus" />
+        </button>
       </header>
       <nav aria-label="Chats">
+        {#if chats.length}<p class="section-label">Chats</p>{/if}
         {#each chats as chat (chat.id)}
-          <button class="chat-item" class:active={chat.id === engine.activeChat} onclick={() => engine.openChat(chat.id)}>
-            <span class="title">{chat.kind === 'group' ? '# ' : ''}{engine.chatTitle(chat)}</span>
-            {#if engine.calls[chat.id]?.length}
-              <span class="in-call" title="Call in progress" aria-label="Call in progress with {engine.calls[chat.id].length}">
-                ● {engine.calls[chat.id].length}
+          {@const unread = engine.meta[chat.id]?.unread ?? 0}
+          {@const inCall = engine.calls[chat.id]?.length ?? 0}
+          {@const other = chat.members.find((m) => m.user_id !== engine.me.id)}
+          <button
+            class="chat-item"
+            class:active={chat.id === engine.activeChat}
+            class:unread={unread > 0}
+            aria-current={chat.id === engine.activeChat ? 'page' : undefined}
+            onclick={() => open(chat.id)}
+          >
+            <Avatar
+              name={engine.chatTitle(chat)}
+              id={chat.kind === 'group' ? chat.id : (other?.user_id ?? engine.me.id)}
+              group={chat.kind === 'group'}
+              size={32}
+            />
+            <span class="title">{engine.chatTitle(chat)}</span>
+            {#if inCall}
+              <span class="in-call" title="Call in progress" aria-label="Call in progress with {inCall}">
+                <Icon name="phone" size={14} />{inCall}
               </span>
             {/if}
-            {#if engine.meta[chat.id]?.unread}
-              <span class="badge" aria-label="{engine.meta[chat.id].unread} unread">{engine.meta[chat.id].unread}</span>
+            {#if unread}
+              <span class="badge" aria-label="{unread} unread">{unread > 99 ? '99+' : unread}</span>
             {/if}
           </button>
         {:else}
-          <p class="hint empty">No chats yet. Start one with “New chat”.</p>
+          <div class="empty">
+            <p class="hint">No chats yet.</p>
+            <button onclick={() => (dialog = 'new')}>Start a chat</button>
+          </div>
         {/each}
       </nav>
       {#if call && callChat}
         <CallBar {engine} {call} title={engine.chatTitle(callChat)} />
       {/if}
-      {#if callError}
-        <p class="error call-error" role="alert">
-          {callError} <button class="link" onclick={() => (callError = '')}>Dismiss</button>
-        </p>
+      {#if engine.recovery === 'skipped'}
+        <button class="secondary attention confirm-device" onclick={openRecovery}>
+          <Icon name="alert" size={16} /> Confirm this device
+        </button>
       {/if}
-      <footer>
+      <footer class="me">
+        <span class="presence" class:offline={!engine.connected}>
+          <Avatar name={user.display_name} id={user.id} size={34} />
+        </span>
         <div class="who">
-          <span>{user.display_name}</span>
+          <span class="name">{user.display_name}</span>
           <span class="hint">{engine.connected ? 'Connected' : 'Reconnecting…'}</span>
         </div>
-        {#if engine.recovery === 'skipped'}
-          <button class="secondary attention" onclick={openRecovery}>Confirm this device</button>
-        {:else}
-          <button class="secondary" onclick={openRecovery}>Security</button>
-        {/if}
-        <button class="secondary" onclick={() => (dialog = 'devices')}>Devices</button>
-        {#if user.is_admin}<button class="secondary" onclick={() => (dialog = 'invites')}>Invites</button>{/if}
-        <button class="secondary" onclick={onSignOut}>Sign out</button>
+        <button class="icon-button" title="Settings" aria-label="Settings" onclick={() => (dialog = 'settings')}>
+          <Icon name="settings" />
+        </button>
       </footer>
     </aside>
 
@@ -161,15 +287,50 @@
         onCall={() => joinCall(active.id)}
         onMembers={() => (dialog = 'members')}
         onVerify={(userId) => (verifying = userId)}
+        onBack={() => (showList = true)}
       />
     {:else}
       <section class="chat placeholder">
-        <p class="lead">Pick a chat, or start a new one.</p>
+        <div class="welcome">
+          <Avatar name={user.display_name} id={user.id} size={56} />
+          <h2>Hi, {user.display_name}</h2>
+          <p class="lead">Pick a chat on the left, or start a new one. Everything here is end-to-end encrypted.</p>
+          <button onclick={() => (dialog = 'new')}>New chat</button>
+        </div>
       </section>
     {/if}
   </div>
 
-  {#if dialog === 'new'}
+  {#if ringing && ringChat}
+    <IncomingCall
+      caller={engine.userName(ringing.callerId)}
+      callerId={ringing.callerId}
+      chatTitle={engine.chatTitle(ringChat)}
+      group={ringChat.kind === 'group'}
+      onJoin={answer}
+      onDecline={() => (ringing = null)}
+    />
+  {/if}
+
+  {#if callError}
+    <div class="toast" role="alert">
+      <Icon name="alert" size={18} />
+      <span>{callError}</span>
+      <button class="icon-button" aria-label="Dismiss" title="Dismiss" onclick={() => (callError = '')}>
+        <Icon name="close" size={16} />
+      </button>
+    </div>
+  {/if}
+
+  {#if dialog === 'settings'}
+    <Settings
+      {user}
+      needsConfirm={engine.recovery === 'skipped'}
+      onOpen={(page) => (page === 'security' ? openRecovery() : (dialog = page))}
+      {onSignOut}
+      onClose={() => (dialog = null)}
+    />
+  {:else if dialog === 'new'}
     <NewChat {engine} onDone={newChatDone} />
   {:else if dialog === 'members' && active}
     <Members {engine} chat={active} onClose={() => (dialog = null)} onVerify={(userId) => (verifying = userId)} />

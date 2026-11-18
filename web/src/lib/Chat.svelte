@@ -3,6 +3,8 @@
   import type { ChatInfo } from './api'
   import type { Engine } from './engine.svelte'
   import type { StoredMessage } from './store'
+  import Avatar from './Avatar.svelte'
+  import Icon from './Icon.svelte'
 
   let {
     engine,
@@ -11,6 +13,7 @@
     onCall,
     onMembers,
     onVerify,
+    onBack,
   }: {
     engine: Engine
     chat: ChatInfo
@@ -18,6 +21,8 @@
     onCall: () => void
     onMembers: () => void
     onVerify: (userId: number) => void
+    /** Back to the chat list, on narrow screens. */
+    onBack: () => void
   } = $props()
 
   const inProgress = $derived(engine.calls[chat.id] ?? [])
@@ -66,25 +71,47 @@
 
 <section class="chat">
   <header class="chat-head">
-    <div>
+    <button class="icon-button back" aria-label="Back to chats" title="Back to chats" onclick={onBack}>
+      <Icon name="back" />
+    </button>
+    <Avatar
+      name={engine.chatTitle(chat)}
+      id={chat.kind === 'group' ? chat.id : (other?.user_id ?? engine.me.id)}
+      group={chat.kind === 'group'}
+      size={36}
+    />
+    <div class="chat-title">
       <h2>{engine.chatTitle(chat)}</h2>
-      <p class="hint">
-        {chat.kind === 'group' ? `${chat.members.length} members, end-to-end encrypted` : 'End-to-end encrypted'}{otherVerified ? ', verified' : ''}
+      <p class="hint secure" class:ok={otherVerified}>
+        <Icon name="lock" size={13} />
+        {chat.kind === 'group' ? `${chat.members.length} members · end-to-end encrypted` : 'End-to-end encrypted'}{otherVerified
+          ? ' · verified'
+          : ''}
       </p>
     </div>
     {#if engine.callsEnabled && chat.joined && !broken}
       {#if inCall}
-        <span class="hint">In call</span>
+        <span class="pill live"><Icon name="phone" size={14} /> In call</span>
+      {:else if inProgress.length}
+        <button class="join-call" onclick={onCall}>
+          <Icon name="phone" size={18} /> <span class="label">Join call ·</span> {inProgress.length}
+        </button>
       {:else}
-        <button class={inProgress.length ? '' : 'secondary'} onclick={onCall}>
-          {inProgress.length ? `Join call (${inProgress.length})` : 'Call'}
+        <button class="icon-button" title="Start a voice call" aria-label="Start a voice call" onclick={onCall}>
+          <Icon name="phone" />
         </button>
       {/if}
     {/if}
     {#if chat.kind === 'group'}
-      <button class="secondary" onclick={onMembers}>Members</button>
+      <button class="icon-button" title="Members" aria-label="Members" onclick={onMembers}><Icon name="users" /></button>
     {:else if other}
-      <button class="secondary" onclick={() => onVerify(other.user_id)}>Verify</button>
+      <button
+        class="icon-button"
+        class:ok={otherVerified}
+        title={otherVerified ? 'Verified. Show safety number' : `Verify ${other.display_name}`}
+        aria-label="Verify"
+        onclick={() => onVerify(other.user_id)}><Icon name="shield" /></button
+      >
     {/if}
   </header>
 
@@ -129,10 +156,13 @@
       {#if newDay(i)}<div class="day"><span>{day(message)}</span></div>{/if}
       <article class="message" class:first={newSender(i)} class:pending={message.seq === null && !message.problem}>
         {#if newSender(i)}
+          <span class="gutter"><Avatar name={engine.userName(message.senderUser)} id={message.senderUser} size={38} /></span>
           <header>
             <strong>{engine.userName(message.senderUser)}</strong>
             <time>{time(message)}</time>
           </header>
+        {:else}
+          <time class="gutter side-time">{time(message)}</time>
         {/if}
         {#if message.problem === 'undecryptable'}
           <p class="hint">This message could not be decrypted on this device.</p>
@@ -159,6 +189,8 @@
       disabled={!chat.joined || broken}
       aria-label="Message"
     ></textarea>
-    <button type="submit" disabled={!chat.joined || broken || !draft.trim()}>Send</button>
+    <button type="submit" class="send" aria-label="Send" title="Send" disabled={!chat.joined || broken || !draft.trim()}>
+      <Icon name="send" size={18} />
+    </button>
   </form>
 </section>
