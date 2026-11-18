@@ -82,7 +82,7 @@ pub async fn require_member(db: &SqlitePool, chat_id: &str, user_id: i64) -> Api
 
 /// The caller must be a member, and their device must hold the chat's keys.
 /// Returns the event after which the device can read.
-async fn require_device_in_chat(db: &SqlitePool, chat_id: &str, auth: &DeviceAuth) -> ApiResult<i64> {
+pub async fn require_device_in_chat(db: &SqlitePool, chat_id: &str, auth: &DeviceAuth) -> ApiResult<i64> {
     require_member(db, chat_id, auth.user.id).await?;
     let row: Option<(i64,)> = sqlx::query_as(
         "SELECT joined_seq FROM chat_devices WHERE chat_id = ? AND device_id = ? AND needs_rejoin = 0",
@@ -378,6 +378,7 @@ async fn remove_member(
     .bind(target)
     .execute(&state.db)
     .await?;
+    crate::calls::forget_user(&state, &chat_id, target);
     // Their backup of this chat goes with them, as the copy on their devices does.
     sqlx::query("DELETE FROM backup_messages WHERE chat_id = ? AND user_id = ?")
         .bind(&chat_id)

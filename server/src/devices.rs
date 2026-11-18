@@ -383,6 +383,7 @@ async fn revoke_device(
     state
         .hub
         .notify(vec![user.id], crate::hub::Notice::Revoked { device_id: id });
+    crate::calls::forget_device(&state, id);
     // Other devices drop it from each chat's key group on their next sync.
     for (chat_id,) in chats {
         crate::chats::notify_chat(&state, &chat_id).await?;

@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onDestroy } from 'svelte'
   import type { User } from './api'
+  import type { Call } from './call.svelte'
+  import CallBar from './CallBar.svelte'
   import Chat from './Chat.svelte'
   import Devices from './Devices.svelte'
   import { Engine } from './engine.svelte'
@@ -17,6 +19,35 @@
   const engine = new Engine(user)
   void engine.start()
   onDestroy(() => engine.stop())
+
+  /** The call this device is in, if any. One at a time. */
+  let call = $state<Call | null>(null)
+  let callError = $state('')
+  const callChat = $derived(call ? (engine.chats.find((c) => c.id === call!.chatId) ?? null) : null)
+
+  async function joinCall(chatId: string) {
+    callError = ''
+    if (call?.chatId === chatId) return
+    await call?.end()
+    // The call code (LiveKit) is only downloaded the first time someone joins a call.
+    const { Call } = await import('./call.svelte')
+    const next = new Call(engine, chatId)
+    call = next
+    await next.start()
+  }
+
+  // A call that ended (left, dropped, or failed) is cleared away.
+  $effect(() => {
+    if (call?.status === 'ended') {
+      callError = call.error
+      call = null
+    }
+  })
+  // Leaving a chat, or this device being signed out, ends its call.
+  $effect(() => {
+    if (call && (engine.status !== 'ready' || (engine.chats.length && !callChat))) void call.end()
+  })
+  onDestroy(() => void call?.end())
 
   let dialog = $state<'new' | 'members' | 'invites' | 'security' | 'devices' | null>(null)
   /** The person whose verification screen is open, on top of any other dialog. */
@@ -85,6 +116,11 @@
         {#each chats as chat (chat.id)}
           <button class="chat-item" class:active={chat.id === engine.activeChat} onclick={() => engine.openChat(chat.id)}>
             <span class="title">{chat.kind === 'group' ? '# ' : ''}{engine.chatTitle(chat)}</span>
+            {#if engine.calls[chat.id]?.length}
+              <span class="in-call" title="Call in progress" aria-label="Call in progress with {engine.calls[chat.id].length}">
+                ● {engine.calls[chat.id].length}
+              </span>
+            {/if}
             {#if engine.meta[chat.id]?.unread}
               <span class="badge" aria-label="{engine.meta[chat.id].unread} unread">{engine.meta[chat.id].unread}</span>
             {/if}
@@ -93,6 +129,14 @@
           <p class="hint empty">No chats yet. Start one with “New chat”.</p>
         {/each}
       </nav>
+      {#if call && callChat}
+        <CallBar {engine} {call} title={engine.chatTitle(callChat)} />
+      {/if}
+      {#if callError}
+        <p class="error call-error" role="alert">
+          {callError} <button class="link" onclick={() => (callError = '')}>Dismiss</button>
+        </p>
+      {/if}
       <footer>
         <div class="who">
           <span>{user.display_name}</span>
@@ -110,7 +154,14 @@
     </aside>
 
     {#if active}
-      <Chat {engine} chat={active} onMembers={() => (dialog = 'members')} onVerify={(userId) => (verifying = userId)} />
+      <Chat
+        {engine}
+        chat={active}
+        inCall={call?.chatId === active.id}
+        onCall={() => joinCall(active.id)}
+        onMembers={() => (dialog = 'members')}
+        onVerify={(userId) => (verifying = userId)}
+      />
     {:else}
       <section class="chat placeholder">
         <p class="lead">Pick a chat, or start a new one.</p>

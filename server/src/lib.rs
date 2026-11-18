@@ -1,6 +1,7 @@
 //! Harmony server: a small, private, self-hosted chat backend.
 
 pub mod auth;
+pub mod calls;
 pub mod chats;
 pub mod config;
 pub mod db;
@@ -33,6 +34,7 @@ pub struct AppState {
     pub login_limiter: Arc<LoginLimiter>,
     pub dummy_password_hash: String,
     pub hub: Hub,
+    pub calls: calls::Calls,
 }
 
 impl AppState {
@@ -43,6 +45,7 @@ impl AppState {
             login_limiter: Arc::new(LoginLimiter::default()),
             dummy_password_hash: auth::make_dummy_hash().await?,
             hub: Hub::default(),
+            calls: calls::Calls::default(),
         })
     }
 }
@@ -56,7 +59,8 @@ pub fn app(state: AppState) -> Router {
         .merge(auth::routes())
         .merge(devices::routes())
         .merge(chats::routes())
-        .merge(recovery::routes());
+        .merge(recovery::routes())
+        .merge(calls::routes());
 
     let web_dir = state.config.web_dir.clone();
     let web = ServeDir::new(&web_dir).fallback(ServeFile::new(web_dir.join("index.html")));
@@ -80,15 +84,34 @@ pub fn app(state: AppState) -> Router {
         // from being tampered with by injected content.
         .layer(SetResponseHeaderLayer::if_not_present(
             header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static(
-                "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
-                 img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' wss:; \
-                 frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
-            ),
+            content_security_policy(&state.config),
         ))
         // Request logging records method, path and status only: never bodies or cookies.
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Only our own scripts may run, and the page may only talk to this server
+/// (and, for calls, the LiveKit server).
+fn content_security_policy(config: &Config) -> HeaderValue {
+    // LiveKit checks a failed connection over plain HTTPS on the same host.
+    let livekit = config
+        .livekit
+        .as_ref()
+        .map(|lk| {
+            let https = lk
+                .url
+                .replacen("wss://", "https://", 1)
+                .replacen("ws://", "http://", 1);
+            format!(" {} {https}", lk.url)
+        })
+        .unwrap_or_default();
+    let policy = format!(
+        "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; \
+         style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; \
+         connect-src 'self' wss:{livekit}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    );
+    HeaderValue::from_str(&policy).expect("the policy is plain ASCII")
 }
 
 async fn health() -> Json<Value> {

@@ -45,6 +45,20 @@ export interface OwnDevice {
   last_seen_at: number | null
 }
 
+export interface CallList {
+  /** Whether this server has voice calls set up. */
+  enabled: boolean
+  /** Calls in progress in your chats: chat id to the users in it. */
+  calls: Record<string, number[]>
+}
+
+export interface CallJoin {
+  url: string
+  token: string
+  identity: string
+  heartbeat_secs: number
+}
+
 export interface BackupItem {
   seq: number
   data: string
@@ -185,6 +199,19 @@ export const api = {
   writeBackup: (chat: string, items: BackupItem[]) => request<void>('POST', `/backup/${chat}`, { items }),
   readBackup: (chat: string, after: number) =>
     request<{ items: BackupItem[]; more: boolean }>('GET', `/backup/${chat}?after=${after}`),
+  calls: () => request<CallList>('GET', '/calls'),
+  joinCall: (chat: string) => request<CallJoin>('POST', `/chats/${chat}/call/join`),
+  callHeartbeat: (chat: string) => request<void>('POST', `/chats/${chat}/call/heartbeat`),
+  leaveCall: (chat: string) => request<void>('POST', `/chats/${chat}/call/leave`),
+  /** For when the page is closing: sent even if the page goes away first. */
+  leaveCallOnExit: (chat: string) => {
+    void fetch(`/api/chats/${chat}/call/leave`, {
+      method: 'POST',
+      keepalive: true,
+      credentials: 'same-origin',
+      headers: deviceId === null ? {} : { 'X-Harmony-Device': String(deviceId) },
+    }).catch(() => {})
+  },
   welcomes: () => request<{ welcomes: Welcome[] }>('GET', '/welcomes'),
   ackWelcome: (id: number) => request<void>('DELETE', `/welcomes/${id}`),
 }
