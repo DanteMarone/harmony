@@ -7,8 +7,6 @@ name: Release
 on:
   push:
     tags: ['v*']
-    # Temporary: publishes v0.1.0 from the deploy branch before it merges.
-    branches: ['claude/project-thread-nyufd7']
 
 permissions:
   contents: write
@@ -17,7 +15,7 @@ jobs:
   bundle:
     runs-on: ubuntu-latest
     env:
-      TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.1.0' }}
+      TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
 
