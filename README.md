@@ -73,6 +73,8 @@ cd web && npm run check     # type checks
 ## Configuration
 
 All settings are environment variables; see [`.env.example`](.env.example).
+Voice calls also need a LiveKit server; [docs/voice.md](docs/voice.md) covers
+how calls work and how to set it up.
 
 ## Keeping secrets out of this repository
 

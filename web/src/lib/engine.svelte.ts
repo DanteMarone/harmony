@@ -97,6 +97,10 @@ export class Engine {
   restoring = $state(false)
   /** Identity keys this device remembers for other people, by user id. */
   trust = $state<Record<number, TrustRecord>>({})
+  /** Whether this server has voice calls set up. */
+  callsEnabled = $state(false)
+  /** Calls in progress in this person's chats: chat id to user ids. */
+  calls = $state<Record<string, number[]>>({})
   /** Per chat: people with a device in it that their identity key does not vouch for. */
   unconfirmed = $state<Record<string, number[]>>({})
 
@@ -333,6 +337,13 @@ export class Engine {
     }
     this.users = users
     this.chats = chats
+    api
+      .calls()
+      .then((list) => {
+        this.callsEnabled = list.enabled
+        this.calls = list.calls
+      })
+      .catch((err) => console.error('could not list calls', err))
     await this.checkRecovery()
     await this.rememberIdentities()
 
@@ -862,6 +873,32 @@ export class Engine {
       await this.store.save({ messages: restored })
       restored.forEach((m) => this.showMessage(m))
     }
+  }
+
+  // -- calls -------------------------------------------------------------------
+
+  /** This device's identity in chats and calls, such as `u3:d7`. */
+  get deviceIdentity(): string {
+    return this.identity
+  }
+
+  /** The chat's current key epoch, or null if this device cannot read the chat. */
+  chatEpoch(chatId: string): number | null {
+    return this.device.hasChat(chatId) ? this.device.epoch(chatId) : null
+  }
+
+  /**
+   * The key for a call in this chat, for the chat's current epoch. Every
+   * device in the chat derives the same one; nobody else, the server
+   * included, can. It changes whenever the chat's membership does.
+   */
+  callKey(chatId: string): Uint8Array {
+    return this.device.exportSecret(chatId, 'harmony call v1', 32)
+  }
+
+  /** Identities of the devices that hold this chat's keys right now. */
+  chatDevices(chatId: string): string[] {
+    return this.device.hasChat(chatId) ? this.device.members(chatId) : []
   }
 
   // -- this person's devices -------------------------------------------------

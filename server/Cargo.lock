@@ -990,6 +990,7 @@ dependencies = [
  "getrandom 0.4.3",
  "harmony-crypto",
  "hex",
+ "hmac 0.13.0",
  "http-body-util",
  "serde",
  "serde_json",
