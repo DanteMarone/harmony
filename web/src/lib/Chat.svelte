@@ -7,9 +7,20 @@
   let {
     engine,
     chat,
+    inCall,
+    onCall,
     onMembers,
     onVerify,
-  }: { engine: Engine; chat: ChatInfo; onMembers: () => void; onVerify: (userId: number) => void } = $props()
+  }: {
+    engine: Engine
+    chat: ChatInfo
+    inCall: boolean
+    onCall: () => void
+    onMembers: () => void
+    onVerify: (userId: number) => void
+  } = $props()
+
+  const inProgress = $derived(engine.calls[chat.id] ?? [])
 
   const warnings = $derived(engine.chatWarnings(chat))
   const other = $derived(chat.kind === 'dm' ? chat.members.find((m) => m.user_id !== engine.me.id) : undefined)
@@ -61,6 +72,15 @@
         {chat.kind === 'group' ? `${chat.members.length} members, end-to-end encrypted` : 'End-to-end encrypted'}{otherVerified ? ', verified' : ''}
       </p>
     </div>
+    {#if engine.callsEnabled && chat.joined && !broken}
+      {#if inCall}
+        <span class="hint">In call</span>
+      {:else}
+        <button class={inProgress.length ? '' : 'secondary'} onclick={onCall}>
+          {inProgress.length ? `Join call (${inProgress.length})` : 'Call'}
+        </button>
+      {/if}
+    {/if}
     {#if chat.kind === 'group'}
       <button class="secondary" onclick={onMembers}>Members</button>
     {:else if other}

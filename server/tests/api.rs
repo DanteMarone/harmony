@@ -23,6 +23,7 @@ async fn server() -> TestServer {
         data_dir: dir.path().join("data"),
         web_dir: dir.path().join("web"),
         cookie_secure: true,
+        livekit: None,
     };
     let state = AppState::new(config).await.unwrap();
     TestServer {

@@ -309,3 +309,25 @@ button.attention { border-color: var(--warn-text); background: var(--warn-bg); c
 .rename input { flex: 1; }
 .confirm { flex-basis: 100%; margin: 0; }
 button.danger-solid { background: var(--danger); border-color: var(--danger); color: #fff; }
+
+/* --- Calls --- */
+.chat-head { gap: 0.5rem; }
+.in-call { font-size: 0.8rem; color: var(--ok); font-weight: 600; }
+.callbar {
+  margin: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  display: grid;
+  gap: 0.5rem;
+}
+.call-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
+.call-members { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.25rem; font-size: 0.9rem; }
+.call-members li { padding: 0.15rem 0.4rem; border-radius: 4px; border-left: 3px solid transparent; }
+.call-members li.speaking { border-left-color: var(--ok); background: var(--bg); }
+.call-members li.outsider { color: var(--warn-text); background: var(--warn-bg); }
+.call-actions { display: flex; gap: 0.5rem; }
+.call-actions button { flex: 1; }
+.call-error { margin: 0.5rem; font-size: 0.85rem; }
+.chat-head > div { flex: 1; min-width: 0; }

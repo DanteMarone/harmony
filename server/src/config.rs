@@ -13,6 +13,28 @@ pub struct Config {
     pub web_dir: PathBuf,
     /// Mark session cookies `Secure` (HTTPS only). Turn off only for local development.
     pub cookie_secure: bool,
+    /// The LiveKit media server used for calls. Calls are off when unset.
+    pub livekit: Option<LiveKit>,
+}
+
+/// How to reach the LiveKit server that relays call audio and video. It
+/// only ever forwards media that is already end-to-end encrypted.
+#[derive(Clone)]
+pub struct LiveKit {
+    /// Address browsers connect to, for example `wss://chat.example.com`.
+    pub url: String,
+    pub api_key: String,
+    pub api_secret: String,
+}
+
+impl std::fmt::Debug for LiveKit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print the secret, even in debug logs.
+        f.debug_struct("LiveKit")
+            .field("url", &self.url)
+            .field("api_key", &self.api_key)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Config {
@@ -29,6 +51,40 @@ impl Config {
             cookie_secure: env::var("HARMONY_COOKIE_SECURE")
                 .map(|v| !matches!(v.as_str(), "0" | "false" | "no"))
                 .unwrap_or(true),
+            livekit: livekit_from_env()?,
         })
+    }
+}
+
+fn livekit_from_env() -> anyhow::Result<Option<LiveKit>> {
+    let get = |name: &str| env::var(name).ok().filter(|v| !v.trim().is_empty());
+    match (
+        get("HARMONY_LIVEKIT_URL"),
+        get("HARMONY_LIVEKIT_API_KEY"),
+        get("HARMONY_LIVEKIT_API_SECRET"),
+    ) {
+        (None, None, None) => Ok(None),
+        (Some(url), Some(api_key), Some(api_secret)) => {
+            anyhow::ensure!(
+                url.starts_with("wss://") || url.starts_with("ws://"),
+                "HARMONY_LIVEKIT_URL must start with wss:// (or ws:// for local testing)"
+            );
+            anyhow::ensure!(
+                !url.contains(|c: char| c.is_whitespace() || c.is_control() || ";,'\"".contains(c)),
+                "HARMONY_LIVEKIT_URL contains characters a URL cannot"
+            );
+            anyhow::ensure!(
+                api_secret.len() >= 32,
+                "HARMONY_LIVEKIT_API_SECRET must be at least 32 characters"
+            );
+            Ok(Some(LiveKit {
+                url: url.trim_end_matches('/').to_owned(),
+                api_key,
+                api_secret,
+            }))
+        }
+        _ => anyhow::bail!(
+            "set all of HARMONY_LIVEKIT_URL, HARMONY_LIVEKIT_API_KEY and HARMONY_LIVEKIT_API_SECRET, or none"
+        ),
     }
 }

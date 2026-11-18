@@ -15,6 +15,7 @@ pub enum ApiError {
     NotFound,
     Conflict(&'static str),
     TooManyRequests,
+    Unavailable(&'static str),
     Internal(anyhow::Error),
 }
 
@@ -38,6 +39,7 @@ impl IntoResponse for ApiError {
                 StatusCode::TOO_MANY_REQUESTS,
                 "too many attempts, try again later",
             ),
+            ApiError::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, m),
             ApiError::Internal(err) => {
                 // Log the detail, never send it to the client.
                 tracing::error!(error = ?err, "internal error");

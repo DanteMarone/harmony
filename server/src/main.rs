@@ -19,6 +19,11 @@ async fn main() -> anyhow::Result<()> {
         println!("This invite works once and expires in 7 days.\n");
     }
 
+    if state.config.livekit.is_none() {
+        tracing::info!("voice calls are off: HARMONY_LIVEKIT_URL is not set");
+    }
+    tokio::spawn(harmony_server::calls::sweep_forever(state.clone()));
+
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("Harmony listening on http://{bind}");
     axum::serve(listener, app(state))
