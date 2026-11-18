@@ -5,7 +5,9 @@ group chats and voice calls, with end-to-end encryption. One Rust program, one
 SQLite file, no third-party services.
 
 **Status:** early development. Accounts, invites and end-to-end encrypted direct
-messages and group chats work. File sharing and voice calls are next. Read
+messages, group chats, voice calls, and photo and file sharing work. Files are
+relayed, not hosted: the server deletes its encrypted copy once everyone has
+theirs. Read
 [how the encryption works](docs/encryption.md), including what is not done yet.
 
 ## Principles

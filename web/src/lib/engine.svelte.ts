@@ -18,7 +18,8 @@ import {
   type User,
   type UserInfo,
 } from './api'
-import { Store, type StoredChat, type StoredMessage, type TrustRecord } from './store'
+import { decryptFile, encryptFile, imageSize, MAX_FILE_BYTES, safeType, formatSize, validFileRef } from './files'
+import { Store, type FileRef, type StoredChat, type StoredMessage, type TrustRecord } from './store'
 
 const ONE_TIME_KEY_PACKAGES = 20
 const BACKUP_BATCH = 100
@@ -60,6 +61,10 @@ function describeThisDevice(): string {
             : ''
   return system ? `${browser} on ${system}` : browser
 }
+
+/** What the history backup keeps of a file: its description, not its key. */
+const backupFile = (file: FileRef | undefined) =>
+  file ? { name: file.name, type: file.type, size: file.size } : undefined
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const isStatus = (err: unknown, status: number) => err instanceof ApiError && err.status === status
@@ -120,6 +125,8 @@ export class Engine {
   /** One queue per chat: steps on the same chat never overlap. */
   private queues = new Map<string, Promise<unknown>>()
   private refreshing: Promise<void> | null = null
+  /** Files are picked up one at a time, in the background. */
+  private fetching: Promise<unknown> = Promise.resolve()
   private refreshAgain: Set<string> | 'all' | null = null
 
   constructor(readonly me: User) {}
@@ -141,6 +148,10 @@ export class Engine {
       this.connect()
       await this.refresh('all')
       this.status = 'ready'
+      // Files that arrived while this device was last open but were not picked up yet.
+      for (const message of await this.store.allMessages()) {
+        if (message.fileState === 'fetching') this.fetchFile(message)
+      }
     } catch (err) {
       console.error(err)
       this.error = err instanceof Error ? err.message : String(err)
@@ -494,6 +505,7 @@ export class Engine {
       if (page.events.length) {
         await this.persist({ chats: [this.metaCopy(chat.id)], messages: changed })
         changed.forEach((m) => this.showMessage(m))
+        changed.filter((m) => m.fileState === 'fetching').forEach((m) => this.fetchFile(m))
       }
       if (!page.more) break
     }
@@ -509,7 +521,8 @@ export class Engine {
   private async ownMessage(chatId: string, clientId: string | null): Promise<StoredMessage | undefined> {
     const key = `${chatId}/${clientId}`
     const cached = this.messages[chatId]?.find((m) => m.key === key)
-    if (cached) return { ...cached }
+    // A plain copy: what is on screen is reactive, and storage cannot hold that.
+    if (cached) return $state.snapshot(cached)
     return (await this.store.messages(chatId)).find((m) => m.key === key)
   }
 
@@ -524,8 +537,8 @@ export class Engine {
     // server's own claim about who sent an event is not trusted for display.
     const match = /^u(\d+):d\d+$/.exec(sender)
     const parsed = JSON.parse(decoder.decode(content))
-    if (!match || parsed?.t !== 'text' || typeof parsed.body !== 'string') return null
-    return {
+    if (!match || typeof parsed?.body !== 'string') return null
+    const message: StoredMessage = {
       key: `${chatId}/#${event.seq}`,
       chatId,
       seq: event.seq,
@@ -533,6 +546,14 @@ export class Engine {
       body: parsed.body,
       sentAt: event.created_at,
     }
+    if (parsed.t === 'text') return message
+    if (parsed.t === 'file' && validFileRef(parsed.file)) {
+      const f = parsed.file
+      const file: FileRef = { id: f.id, name: f.name, type: f.type, size: f.size, key: f.key, iv: f.iv }
+      if (f.width && f.height) Object.assign(file, { width: f.width, height: f.height })
+      return { ...message, file, fileState: 'fetching' }
+    }
+    return null
   }
 
   /**
@@ -809,7 +830,7 @@ export class Engine {
               sealBackup(
                 key,
                 this.backupContext(chatId, m.seq!),
-                encoder.encode(JSON.stringify({ u: m.senderUser, b: m.body, t: m.sentAt })),
+                encoder.encode(JSON.stringify({ u: m.senderUser, b: m.body, t: m.sentAt, f: backupFile(m.file) })),
               ),
             ),
           }))
@@ -854,7 +875,7 @@ export class Engine {
             decoder.decode(openBackup(key, this.backupContext(chatId, item.seq), fromBase64(item.data))),
           )
           if (typeof plain?.u !== 'number' || typeof plain.b !== 'string' || typeof plain.t !== 'number') continue
-          restored.push({
+          const restoredMessage: StoredMessage = {
             key: existing?.key ?? `${chatId}/#${item.seq}`,
             chatId,
             seq: item.seq,
@@ -862,7 +883,15 @@ export class Engine {
             body: plain.b,
             sentAt: plain.t,
             backedUp: true,
-          })
+          }
+          // The backup keeps only a file's description: the file itself
+          // lives on the devices that received it.
+          const f = plain.f
+          if (f && typeof f.name === 'string' && typeof f.type === 'string' && typeof f.size === 'number') {
+            restoredMessage.file = { id: '', name: f.name.slice(0, 255), type: f.type.slice(0, 255), size: f.size, key: '', iv: '' }
+            restoredMessage.fileState = 'gone'
+          }
+          restored.push(restoredMessage)
         } catch (err) {
           console.error('could not read backup item', chatId, item.seq, err)
         }
@@ -1031,13 +1060,78 @@ export class Engine {
     // Shown and saved straight away; it gets its place in the chat once the server has it.
     await this.store.save({ messages: [message] })
     this.showMessage(message)
+    await this.deliver(message)
+  }
+
+  /**
+   * Sends a photo or file. This device keeps its own copy; the server holds
+   * an encrypted one only until every other device in the chat has fetched it.
+   */
+  async sendFile(chatId: string, file: File) {
+    if (file.size > MAX_FILE_BYTES) throw new Error(`${file.name} is larger than ${formatSize(MAX_FILE_BYTES)}`)
+    const blob = new Blob([await file.arrayBuffer()], { type: safeType(file.type) })
+    const ref: FileRef = {
+      id: '',
+      name: (file.name || 'file').slice(0, 255),
+      type: file.type.slice(0, 255),
+      size: file.size,
+      key: '',
+      iv: '',
+      ...(await imageSize(blob)),
+    }
+    const message: StoredMessage = {
+      key: `${chatId}/${crypto.randomUUID()}`,
+      chatId,
+      seq: null,
+      senderUser: this.me.id,
+      body: '',
+      sentAt: Math.floor(Date.now() / 1000),
+      file: ref,
+      fileState: 'ready',
+    }
+    await this.store.save({ messages: [message], files: [{ key: message.key, blob }] })
+    this.showMessage(message)
+    await this.deliver(message)
+  }
+
+  /** Tries a message that could not be sent again. */
+  async retry(message: StoredMessage) {
+    const again: StoredMessage = { ...$state.snapshot(message), problem: undefined, note: undefined }
+    await this.store.save({ messages: [again] })
+    this.showMessage(again)
+    await this.deliver(again)
+  }
+
+  private async deliver(original: StoredMessage) {
+    const chatId = original.chatId
+    let message = original
+    try {
+      if (message.file && !message.file.id) {
+        // Upload first, outside the chat's queue, so a large file does not
+        // hold up other messages. A fresh key for every upload.
+        const blob = await this.store.file(message.key)
+        if (!blob) throw new Error('the file is no longer on this device')
+        const sealed = await encryptFile(new Uint8Array(await blob.arrayBuffer()))
+        const uploaded = await api.uploadAttachment(chatId, sealed.data)
+        message = { ...message, file: { ...message.file, id: uploaded.id, key: sealed.key, iv: sealed.iv } }
+        await this.store.save({ messages: [message] })
+        this.showMessage(message)
+      }
+    } catch (err) {
+      await this.sendFailed(message, err)
+      return
+    }
+    const payload = message.file
+      ? JSON.stringify({ t: 'file', body: message.body, file: message.file })
+      : JSON.stringify({ t: 'text', body: message.body })
+    const clientId = message.key.split('/')[1]
 
     await this.enqueue(chatId, async () => {
       const chat = this.chats.find((c) => c.id === chatId)
       try {
         if (!chat) throw new Error('chat not found')
         for (let attempt = 0; attempt < 4; attempt++) {
-          const data = this.device.encrypt(chatId, encoder.encode(JSON.stringify({ t: 'text', body })))
+          const data = this.device.encrypt(chatId, encoder.encode(payload))
           // Save before sending: each encryption moves the keys forward,
           // and a position must never be used twice.
           await this.persist()
@@ -1056,12 +1150,62 @@ export class Engine {
         }
         throw new Error('could not send after several attempts')
       } catch (err) {
-        console.error('send failed', err)
-        const failed: StoredMessage = { ...message, problem: 'failed' }
-        await this.store.save({ messages: [failed] })
-        this.showMessage(failed)
+        if (message.file?.id) {
+          // Nobody will be told how to open it: take it back off the server.
+          void api.cancelAttachment(message.file.id).catch(() => {})
+          message = { ...message, file: { ...message.file, id: '', key: '', iv: '' } }
+        }
+        await this.sendFailed(message, err)
       }
     })
+  }
+
+  private async sendFailed(message: StoredMessage, err: unknown) {
+    console.error('send failed', err)
+    const note = err instanceof ApiError && err.status !== 409 ? err.message : undefined
+    const failed: StoredMessage = { ...message, problem: 'failed', note }
+    await this.store.save({ messages: [failed] })
+    this.showMessage(failed)
+  }
+
+  /** Picks up a file someone sent, keeps a decrypted copy here, and tells the server. */
+  private fetchFile(message: StoredMessage) {
+    this.fetching = this.fetching.then(async () => {
+      const file = message.file
+      if (!file?.id || this.stopped) return
+      let state: StoredMessage['fileState']
+      let blob: Blob | undefined
+      try {
+        const data = await api.downloadAttachment(file.id)
+        try {
+          blob = new Blob([(await decryptFile(data, file.key, file.iv)) as BlobPart], { type: safeType(file.type) })
+          state = 'ready'
+        } catch (err) {
+          console.error('could not decrypt a file', err)
+          state = 'gone'
+        }
+      } catch (err) {
+        if (!isStatus(err, 404)) {
+          // Offline or the server is busy: try again next time Harmony starts.
+          console.error('could not fetch a file', err)
+          return
+        }
+        state = 'gone' // past its time, or this device was added after it was sent
+      }
+      if (this.stopped) return
+      // Read the latest copy so nothing changed in the meantime is lost.
+      const latest = (await this.store.messages(message.chatId)).find((m) => m.key === message.key) ?? message
+      const updated: StoredMessage = { ...latest, fileState: state }
+      await this.store.save({ messages: [updated], files: blob ? [{ key: message.key, blob }] : [] })
+      this.showMessage(updated)
+      // Even a copy that could not be opened is done with: the server need not keep it for us.
+      void api.attachmentReceived(file.id).catch(() => {})
+    })
+  }
+
+  /** The decrypted copy of a file on this device, if there is one. */
+  fileBlob(message: StoredMessage): Promise<Blob | undefined> {
+    return this.store.file(message.key)
   }
 
   // -- for display -------------------------------------------------------------

@@ -30,6 +30,7 @@ async fn server() -> Server {
         web_dir: dir.path().join("web"),
         cookie_secure: true,
         livekit: None,
+        attachments: Default::default(),
     };
     let state = AppState::new(config).await.unwrap();
     Server {

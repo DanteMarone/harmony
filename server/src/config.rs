@@ -15,6 +15,35 @@ pub struct Config {
     pub cookie_secure: bool,
     /// The LiveKit media server used for calls. Calls are off when unset.
     pub livekit: Option<LiveKit>,
+    /// How much the server holds for photos and files in transit.
+    pub attachments: AttachmentLimits,
+}
+
+/// Limits on the encrypted photos and files the server holds while it hands
+/// them on. It is a relay, not storage: these keep a small server's disk safe.
+#[derive(Clone, Debug)]
+pub struct AttachmentLimits {
+    /// Largest single file, in bytes (of ciphertext).
+    pub max_file_bytes: u64,
+    /// Most the server holds at once, for everyone together.
+    pub max_total_bytes: u64,
+    /// Most one person can have waiting at once.
+    pub max_user_bytes: u64,
+    /// A file nobody has picked up is deleted after this many seconds.
+    pub keep_secs: i64,
+}
+
+const MB: u64 = 1024 * 1024;
+
+impl Default for AttachmentLimits {
+    fn default() -> Self {
+        Self {
+            max_file_bytes: 25 * MB,
+            max_total_bytes: 1024 * MB,
+            max_user_bytes: 300 * MB,
+            keep_secs: 7 * 24 * 60 * 60,
+        }
+    }
 }
 
 /// How to reach the LiveKit server that relays call audio and video. It
@@ -52,8 +81,37 @@ impl Config {
                 .map(|v| !matches!(v.as_str(), "0" | "false" | "no"))
                 .unwrap_or(true),
             livekit: livekit_from_env()?,
+            attachments: attachments_from_env()?,
         })
     }
+}
+
+fn attachments_from_env() -> anyhow::Result<AttachmentLimits> {
+    let defaults = AttachmentLimits::default();
+    let number = |name: &str| -> anyhow::Result<Option<u64>> {
+        match env::var(name).ok().filter(|v| !v.trim().is_empty()) {
+            None => Ok(None),
+            Some(v) => {
+                let n: u64 = v
+                    .trim()
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("{name} must be a whole number"))?;
+                anyhow::ensure!(n > 0, "{name} must be more than 0");
+                Ok(Some(n))
+            }
+        }
+    };
+    let limits = AttachmentLimits {
+        max_file_bytes: number("HARMONY_FILE_MAX_MB")?.map_or(defaults.max_file_bytes, |n| n * MB),
+        max_total_bytes: number("HARMONY_FILES_TOTAL_MB")?.map_or(defaults.max_total_bytes, |n| n * MB),
+        max_user_bytes: number("HARMONY_FILES_PER_USER_MB")?.map_or(defaults.max_user_bytes, |n| n * MB),
+        keep_secs: number("HARMONY_FILES_KEEP_DAYS")?.map_or(defaults.keep_secs, |n| n as i64 * 24 * 60 * 60),
+    };
+    anyhow::ensure!(
+        limits.max_file_bytes <= 100 * MB,
+        "HARMONY_FILE_MAX_MB can be at most 100: each upload is held in memory while it is checked"
+    );
+    Ok(limits)
 }
 
 fn livekit_from_env() -> anyhow::Result<Option<LiveKit>> {

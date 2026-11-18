@@ -16,6 +16,8 @@ pub enum ApiError {
     Conflict(&'static str),
     TooManyRequests,
     Unavailable(&'static str),
+    TooLarge(&'static str),
+    StorageFull(&'static str),
     Internal(anyhow::Error),
 }
 
@@ -40,6 +42,8 @@ impl IntoResponse for ApiError {
                 "too many attempts, try again later",
             ),
             ApiError::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, m),
+            ApiError::TooLarge(m) => (StatusCode::PAYLOAD_TOO_LARGE, m),
+            ApiError::StorageFull(m) => (StatusCode::INSUFFICIENT_STORAGE, m),
             ApiError::Internal(err) => {
                 // Log the detail, never send it to the client.
                 tracing::error!(error = ?err, "internal error");

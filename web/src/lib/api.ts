@@ -144,6 +144,24 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T
 }
 
+/** Sends or fetches raw bytes (encrypted files) rather than JSON. */
+async function bytes(method: string, path: string, body?: Uint8Array): Promise<Response> {
+  const headers: Record<string, string> = {}
+  if (body !== undefined) headers['Content-Type'] = 'application/octet-stream'
+  if (deviceId !== null) headers['X-Harmony-Device'] = String(deviceId)
+  const response = await fetch(`/api${path}`, {
+    method,
+    credentials: 'same-origin',
+    headers,
+    body: body as BodyInit | undefined,
+  })
+  if (!response.ok) {
+    const data = await response.json().catch(() => null)
+    throw new ApiError(response.status, data?.error ?? `request failed (${response.status})`)
+  }
+  return response
+}
+
 export const api = {
   /** The signed-in user, or null when nobody is signed in. */
   async me(): Promise<User | null> {
@@ -190,6 +208,13 @@ export const api = {
   rejoin: (chat: string) => request<void>('POST', `/chats/${chat}/rejoin`),
   sendMessage: (chat: string, epoch: number, data: string, client_id: string) =>
     request<{ seq: number; created_at: number }>('POST', `/chats/${chat}/messages`, { epoch, data, client_id }),
+  /** Hands an encrypted file to the server to pass on. */
+  uploadAttachment: async (chat: string, data: Uint8Array) =>
+    (await (await bytes('POST', `/chats/${chat}/attachments`, data)).json()) as { id: string; expires_at: number },
+  downloadAttachment: async (id: string) => new Uint8Array(await (await bytes('GET', `/attachments/${id}`)).arrayBuffer()),
+  /** This device has its own copy now; the server can let go of it once every device does. */
+  attachmentReceived: (id: string) => request<void>('POST', `/attachments/${id}/received`),
+  cancelAttachment: (id: string) => request<void>('DELETE', `/attachments/${id}`),
   events: (chat: string, after: number) =>
     request<{ events: ChatEvent[]; more: boolean }>('GET', `/chats/${chat}/events?after=${after}`),
   setIdentity: (identity_key: string, signature: string) =>
