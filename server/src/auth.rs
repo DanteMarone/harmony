@@ -140,6 +140,9 @@ pub struct User {
     pub username: String,
     pub display_name: String,
     pub is_admin: bool,
+    /// The login session this request came in on (0 right after logging in).
+    #[serde(skip)]
+    pub session_id: i64,
 }
 
 impl FromRequestParts<AppState> for User {
@@ -153,7 +156,7 @@ impl FromRequestParts<AppState> for User {
             .value()
             .to_owned();
         sqlx::query_as::<_, User>(
-            "SELECT u.id, u.username, u.display_name, u.is_admin
+            "SELECT u.id, u.username, u.display_name, u.is_admin, s.id AS session_id
              FROM sessions s JOIN users u ON u.id = s.user_id
              WHERE s.token_hash = ? AND s.expires_at > ?",
         )
@@ -196,12 +199,12 @@ fn time_duration(secs: i64) -> time::Duration {
 }
 
 async fn fetch_user(db: &SqlitePool, id: i64) -> ApiResult<User> {
-    Ok(
-        sqlx::query_as::<_, User>("SELECT id, username, display_name, is_admin FROM users WHERE id = ?")
-            .bind(id)
-            .fetch_one(db)
-            .await?,
+    Ok(sqlx::query_as::<_, User>(
+        "SELECT id, username, display_name, is_admin, 0 AS session_id FROM users WHERE id = ?",
     )
+    .bind(id)
+    .fetch_one(db)
+    .await?)
 }
 
 // ---------------------------------------------------------------------------

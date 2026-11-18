@@ -921,3 +921,169 @@ async fn history_backup_is_private_and_restorable() {
         .unwrap();
     assert_eq!(count, 0);
 }
+
+/// Signs in again from scratch: a new browser with its own session and device.
+async fn sign_in_elsewhere(s: &Server, username: &str, user_id: i64) -> Client {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/auth/login")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({ "username": username, "password": "correct horse battery" }).to_string(),
+        ))
+        .unwrap();
+    let response = s.app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookie = response.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    Client::new_device(s, cookie, user_id).await
+}
+
+#[tokio::test]
+async fn a_device_can_be_signed_out_remotely() {
+    let s = server().await;
+    let bootstrap = auth::bootstrap_invite(&s.state.db).await.unwrap().unwrap();
+    let alice = Client::join_server(&s, &bootstrap, "alice").await;
+    let bob = Client::join_server(&s, &invite(&alice).await, "bob").await;
+    let laptop = sign_in_elsewhere(&s, "bob", bob.user_id).await;
+
+    let created = alice
+        .ok(
+            "POST",
+            "/api/chats",
+            Some(json!({ "kind": "dm", "member_ids": [bob.user_id] })),
+        )
+        .await;
+    let chat = created["chat"]["id"].as_str().unwrap().to_owned();
+    alice.mls.create_chat(&chat).unwrap();
+    assert!(alice.reconcile(&chat).await);
+    bob.accept_welcomes().await;
+    let laptop_cursor = laptop.accept_welcomes().await[0].1;
+    assert_eq!(alice.mls.members(&chat).unwrap().len(), 3);
+
+    // Bob sees both his devices, can name them, and sees no one else's.
+    let devices = bob.ok("GET", "/api/devices", None).await;
+    let ids: Vec<i64> = devices
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(ids, [laptop.device_id, bob.device_id]);
+    assert!(devices[0]["last_seen_at"].as_i64().unwrap() % 60 == 0);
+    bob.ok(
+        "PUT",
+        &format!("/api/devices/{}/name", laptop.device_id),
+        Some(json!({ "name": "Work laptop" })),
+    )
+    .await;
+    assert_eq!(
+        bob.ok("GET", "/api/devices", None).await[0]["name"],
+        "Work laptop"
+    );
+    let (status, _) = bob
+        .call(
+            "PUT",
+            &format!("/api/devices/{}/name", laptop.device_id),
+            Some(json!({ "name": "x".repeat(49) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Nobody can rename or sign out someone else's device.
+    for (method, path, body) in [
+        ("DELETE", format!("/api/devices/{}", laptop.device_id), None),
+        (
+            "PUT",
+            format!("/api/devices/{}/name", laptop.device_id),
+            Some(json!({ "name": "mine now" })),
+        ),
+    ] {
+        assert_eq!(alice.call(method, &path, body).await.0, StatusCode::NOT_FOUND);
+    }
+
+    // Bob signs the laptop out from his phone.
+    bob.ok("DELETE", &format!("/api/devices/{}", laptop.device_id), None)
+        .await;
+    assert_eq!(
+        bob.call("DELETE", &format!("/api/devices/{}", laptop.device_id), None)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+
+    // The laptop's session is gone, and its device can never be used again.
+    assert_eq!(
+        laptop.call("GET", "/api/me", None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let mut reused = sign_in_elsewhere(&s, "bob", bob.user_id).await;
+    reused.device_id = laptop.device_id;
+    assert_eq!(
+        reused.call("GET", "/api/chats", None).await.0,
+        StatusCode::FORBIDDEN
+    );
+
+    // Its leftovers are cleared, and it is no longer listed.
+    let (packages,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM key_packages WHERE device_id = ?")
+        .bind(laptop.device_id)
+        .fetch_one(&s.state.db)
+        .await
+        .unwrap();
+    assert_eq!(packages, 0);
+    let listed = bob.ok("GET", "/api/devices", None).await;
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|d| d["id"].as_i64() != Some(laptop.device_id))
+    );
+
+    // Alice's device removes it from the chat's keys; it cannot read what comes next.
+    assert!(alice.reconcile(&chat).await);
+    assert_eq!(
+        alice.mls.members(&chat).unwrap().len(),
+        3,
+        "the re-signed-in browser joins"
+    );
+    assert!(
+        !alice
+            .mls
+            .members(&chat)
+            .unwrap()
+            .contains(&format!("u{}:d{}", bob.user_id, laptop.device_id))
+    );
+    let bob_cursor = bob.read(&chat, 0).await.1;
+    assert_eq!(
+        alice.send(&chat, "after the laptop left").await,
+        StatusCode::CREATED
+    );
+    let (texts, _) = bob.read(&chat, bob_cursor).await;
+    assert_eq!(texts, ["after the laptop left"]);
+    // Even holding every event, the laptop's old keys cannot open the new message.
+    let events = alice
+        .ok(
+            "GET",
+            &format!("/api/chats/{chat}/events?after={laptop_cursor}"),
+            None,
+        )
+        .await;
+    let events = events["events"].as_array().unwrap();
+    let (last, earlier) = events.split_last().unwrap();
+    for event in earlier {
+        let _ = laptop
+            .mls
+            .process(&chat, &B64.decode(event["data"].as_str().unwrap()).unwrap());
+    }
+    let data = B64.decode(last["data"].as_str().unwrap()).unwrap();
+    assert!(
+        !matches!(laptop.mls.process(&chat, &data), Ok(Processed::Message { .. })),
+        "the removed laptop cannot decrypt new messages"
+    );
+}

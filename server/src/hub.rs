@@ -29,6 +29,12 @@ pub enum Notice {
     Welcome,
     /// Someone's identity key or device signatures changed.
     Users,
+    /// New items in this person's own history backup of a chat, from `from_seq` on.
+    /// Their other devices fetch them, so messages sent before a device
+    /// joined still reach it when another device backs them up later.
+    Backup { chat_id: String, from_seq: i64 },
+    /// This device was signed out. Sent only to that device; its socket closes after.
+    Revoked { device_id: i64 },
 }
 
 #[derive(Clone, Debug)]
@@ -58,17 +64,22 @@ impl Hub {
 }
 
 pub async fn connect(State(state): State<AppState>, auth: DeviceAuth, upgrade: WebSocketUpgrade) -> Response {
-    upgrade.on_upgrade(move |socket| serve(socket, state.hub.clone(), auth.user.id))
+    upgrade.on_upgrade(move |socket| serve(socket, state.hub.clone(), auth.user.id, auth.device_id))
 }
 
-async fn serve(mut socket: WebSocket, hub: Hub, user_id: i64) {
+async fn serve(mut socket: WebSocket, hub: Hub, user_id: i64, device_id: i64) {
     let mut notices = hub.0.subscribe();
     loop {
         tokio::select! {
             notice = notices.recv() => match notice {
                 Ok(envelope) if envelope.users.contains(&user_id) => {
+                    let revoked = match envelope.notice {
+                        Notice::Revoked { device_id: d } if d == device_id => true,
+                        Notice::Revoked { .. } => continue,
+                        _ => false,
+                    };
                     let Ok(text) = serde_json::to_string(&envelope.notice) else { continue };
-                    if socket.send(Message::Text(text.into())).await.is_err() {
+                    if socket.send(Message::Text(text.into())).await.is_err() || revoked {
                         break;
                     }
                 }
