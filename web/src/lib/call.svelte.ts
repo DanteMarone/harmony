@@ -55,6 +55,13 @@ export class Call {
   members = $state<CallMember[]>([])
   /** Someone's audio could not be decrypted: they may be a moment behind on a key change. */
   decryptProblems = $state(0)
+  /** Set when this device is in the call listening only, because its microphone could not be used. */
+  micProblem = $state('')
+  /** Microphones this browser can see, for the picker. */
+  microphones = $state<{ id: string; label: string }[]>([])
+  microphone = $state('')
+  /** The browser blocked sound until the person clicks something on the page. */
+  audioBlocked = $state(false)
 
   private room: Room | null = null
   private keys = new EpochKeyProvider()
@@ -93,6 +100,8 @@ export class Call {
         .on(RoomEvent.TrackSubscribed, (track, _publication, participant) => this.attach(track, participant))
         .on(RoomEvent.TrackUnsubscribed, (track) => track.detach().forEach((el) => el.remove()))
         .on(RoomEvent.EncryptionError, () => (this.decryptProblems += 1))
+        .on(RoomEvent.AudioPlaybackStatusChanged, () => (this.audioBlocked = !room.canPlaybackAudio))
+        .on(RoomEvent.MediaDevicesChanged, () => void this.listMicrophones())
         .on(RoomEvent.Reconnecting, () => (this.status = 'reconnecting'))
         .on(RoomEvent.Reconnected, () => (this.status = 'connected'))
         .on(RoomEvent.Disconnected, () => {
@@ -107,8 +116,9 @@ export class Call {
       this.timers.push(setInterval(() => void this.updateKey(), 1000))
       this.timers.push(setInterval(() => void this.heartbeat(), joined.heartbeat_secs * 1000))
       this.refreshMembers()
-      await room.localParticipant.setMicrophoneEnabled(true)
-      this.refreshMembers()
+      this.audioBlocked = !room.canPlaybackAudio
+      // No microphone is not a reason to miss the call: stay in and listen.
+      await this.enableMicrophone()
     } catch (err) {
       console.error('call failed', err)
       const message =
@@ -121,6 +131,49 @@ export class Call {
               : 'Could not join the call.'
       await this.end(message)
     }
+  }
+
+  /** Turns the microphone on, or leaves this device listening only with a note saying why. */
+  async enableMicrophone(deviceId = this.microphone) {
+    const room = this.room
+    if (!room) return
+    try {
+      if (deviceId) await room.switchActiveDevice('audioinput', deviceId, true)
+      await room.localParticipant.setMicrophoneEnabled(true, deviceId ? { deviceId: { exact: deviceId } } : undefined)
+      this.micProblem = ''
+      this.muted = false
+    } catch (err) {
+      console.warn('microphone unavailable', err)
+      await room.localParticipant.setMicrophoneEnabled(false).catch(() => {})
+      this.micProblem = microphoneMessage(err)
+      this.muted = true
+    }
+    await this.listMicrophones()
+    this.refreshMembers()
+  }
+
+  async chooseMicrophone(deviceId: string) {
+    this.microphone = deviceId
+    await this.enableMicrophone(deviceId)
+  }
+
+  private async listMicrophones() {
+    try {
+      const devices = await Room.getLocalDevices('audioinput', false)
+      this.microphones = devices
+        .filter((d) => d.deviceId)
+        .map((d, i) => ({ id: d.deviceId, label: d.label || `Microphone ${i + 1}` }))
+      const active = this.room?.getActiveDevice('audioinput')
+      if (active && this.microphones.some((m) => m.id === active)) this.microphone = active
+    } catch {
+      this.microphones = []
+    }
+  }
+
+  /** Browsers only play sound after a click on the page. */
+  async startAudio() {
+    await this.room?.startAudio().catch(() => {})
+    this.audioBlocked = !(this.room?.canPlaybackAudio ?? true)
   }
 
   private async updateKey() {
@@ -172,6 +225,7 @@ export class Call {
 
   async toggleMute() {
     if (!this.room) return
+    if (this.micProblem) return this.enableMicrophone()
     this.muted = !this.muted
     await this.room.localParticipant.setMicrophoneEnabled(!this.muted)
     this.refreshMembers()
@@ -191,5 +245,23 @@ export class Call {
     this.room = null
     await room?.disconnect().catch(() => {})
     await api.leaveCall(this.chatId).catch(() => {})
+  }
+}
+
+/** A short, plain explanation of why the microphone could not be used. */
+function microphoneMessage(err: unknown): string {
+  const name = err instanceof Error ? err.name : ''
+  switch (name) {
+    case 'NotFoundError':
+    case 'OverconstrainedError':
+      return 'No microphone found. You can listen, but others cannot hear you. Plug one in, or pick one below, then try again.'
+    case 'NotAllowedError':
+    case 'SecurityError':
+      return 'Microphone permission is blocked. You can listen, but others cannot hear you. Allow the microphone for this site (the icon left of the address bar), then try again.'
+    case 'NotReadableError':
+    case 'AbortError':
+      return 'Your microphone is busy or failed to start (another app may be using it). You can listen meanwhile. Try again, or pick another one below.'
+    default:
+      return 'Your microphone could not be started. You can listen, but others cannot hear you. Try again, or pick another one below.'
   }
 }

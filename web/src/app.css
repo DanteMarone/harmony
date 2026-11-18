@@ -580,4 +580,7 @@ button.menu-item, .menu-item {
 .call-actions { display: flex; gap: 0.5rem; }
 .call-actions button { flex: 1; }
 .call-error { margin: 0.5rem; font-size: 0.85rem; }
+.call-note { margin: 0; font-size: 0.85rem; padding: 0.4rem 0.5rem; border-radius: 4px; color: var(--warn-text); background: var(--warn-bg); }
+.call-mic { display: grid; gap: 0.2rem; font-size: 0.85rem; }
+.call-mic select { width: 100%; }
 .chat-head > div { flex: 1; min-width: 0; }
