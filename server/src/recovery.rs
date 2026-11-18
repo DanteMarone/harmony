@@ -184,6 +184,11 @@ async fn write_backup(
         .await?;
     }
     tx.commit().await?;
+    if let Some(from_seq) = body.items.iter().map(|item| item.seq).min() {
+        state
+            .hub
+            .notify(vec![auth.user.id], Notice::Backup { chat_id, from_seq });
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

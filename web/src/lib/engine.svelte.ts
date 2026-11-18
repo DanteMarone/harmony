@@ -35,6 +35,32 @@ export type TrustStatus = 'verified' | 'unverified' | 'changed' | 'unconfirmed' 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
+/** A default name for this device, such as "Firefox on Windows". Only the owner sees it. */
+function describeThisDevice(): string {
+  const agent = navigator.userAgent
+  const browser = /Edg\//.test(agent)
+    ? 'Edge'
+    : /Firefox\//.test(agent)
+      ? 'Firefox'
+      : /Chrome\//.test(agent)
+        ? 'Chrome'
+        : /Safari\//.test(agent)
+          ? 'Safari'
+          : 'Browser'
+  const system = /Windows/.test(agent)
+    ? 'Windows'
+    : /Android/.test(agent)
+      ? 'Android'
+      : /iPhone|iPad/.test(agent)
+        ? 'iOS'
+        : /Mac OS X/.test(agent)
+          ? 'macOS'
+          : /Linux/.test(agent)
+            ? 'Linux'
+            : ''
+  return system ? `${browser} on ${system}` : browser
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const isStatus = (err: unknown, status: number) => err instanceof ApiError && err.status === status
 
@@ -46,8 +72,12 @@ function inOrder(a: StoredMessage, b: StoredMessage): number {
 }
 
 export class Engine {
-  /** `locked` means Harmony is already open in another tab. */
-  status = $state<'starting' | 'ready' | 'locked' | 'error'>('starting')
+  /**
+   * `locked`: Harmony is already open in another tab. `revoked`: this device
+   * was signed out from another one and its data erased. `signedOut`: the
+   * login session ended.
+   */
+  status = $state<'starting' | 'ready' | 'locked' | 'error' | 'revoked' | 'signedOut'>('starting')
   error = $state('')
   connected = $state(false)
   users = $state<UserInfo[]>([])
@@ -164,7 +194,7 @@ export class Engine {
         this.store = await Store.open(this.me.id)
       }
     }
-    const created = await api.createDevice()
+    const created = await api.createDevice(describeThisDevice())
     this.device = Device.create(created.identity)
     this.deviceId = created.id
     this.identity = created.identity
@@ -235,6 +265,20 @@ export class Engine {
     socket.onmessage = (event) => {
       try {
         const notice = JSON.parse(event.data)
+        if (notice.type === 'revoked' && notice.device_id === this.deviceId) {
+          void this.wipe()
+          return
+        }
+        if (notice.type === 'backup') {
+          const chatId = notice.chat_id as string
+          const after = Math.max(0, Number(notice.from_seq) - 1)
+          if (this.backupKey && this.chats.some((c) => c.id === chatId)) {
+            void this.enqueue(chatId, () => this.restoreChat(chatId, after)).catch((err) =>
+              console.error('could not restore chat', chatId, err),
+            )
+          }
+          return
+        }
         void this.refresh(notice.type === 'chat' ? new Set([notice.chat_id as string]) : 'all')
       } catch {
         void this.refresh('all')
@@ -277,7 +321,16 @@ export class Engine {
   }
 
   private async refreshOnce(dirty: Set<string> | 'all') {
-    const [users, chats] = await Promise.all([api.users(), api.chats()])
+    let users: UserInfo[], chats: ChatInfo[]
+    try {
+      ;[users, chats] = await Promise.all([api.users(), api.chats()])
+    } catch (err) {
+      // 401: the login session ended (possibly because this device was
+      // signed out elsewhere). 403: the server no longer accepts this device.
+      if (isStatus(err, 403)) await this.wipe()
+      else if (isStatus(err, 401)) this.endSession()
+      throw err
+    }
     this.users = users
     this.chats = chats
     await this.checkRecovery()
@@ -774,12 +827,12 @@ export class Engine {
     }
   }
 
-  private async restoreChat(chatId: string) {
+  private async restoreChat(chatId: string, from = 0) {
     const key = this.backupKey
     if (!key) return
     const local = new Map((await this.store.messages(chatId)).map((m) => [m.seq, m]))
     const restored: StoredMessage[] = []
-    for (let after = 0; ; ) {
+    for (let after = from; ; ) {
       const page = await api.readBackup(chatId, after)
       for (const item of page.items) {
         after = item.seq
@@ -809,6 +862,72 @@ export class Engine {
       await this.store.save({ messages: restored })
       restored.forEach((m) => this.showMessage(m))
     }
+  }
+
+  // -- this person's devices -------------------------------------------------
+
+  get thisDeviceId(): number {
+    return this.deviceId
+  }
+
+  /** Whether one of the person's devices is confirmed with their recovery code. */
+  deviceConfirmed(deviceId: number): boolean {
+    const me = this.users.find((u) => u.id === this.me.id)
+    const device = me?.devices.find((d) => d.id === deviceId)
+    if (!me?.identity_key || !device?.signature) return false
+    const key = this.identityKey ? toBase64(this.identityKey) : me.identity_key
+    if (key !== me.identity_key) return false
+    const publicKey = this.devicePublicKey(deviceId)
+    // Not in any chat with this device: its key cannot be checked here, so
+    // the signature's presence is all there is to show. Chats still check it.
+    if (!publicKey.length) return true
+    try {
+      return verifyDevice(fromBase64(key), device.identity, publicKey, fromBase64(device.signature))
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * A device's public signature key, as recorded in the key group of a chat
+   * this device shares with it. Empty when no shared chat holds it.
+   */
+  private devicePublicKey(deviceId: number): Uint8Array {
+    if (deviceId === this.deviceId) return this.device.signaturePublicKey()
+    const identity = `u${this.me.id}:d${deviceId}`
+    for (const chat of this.chats) {
+      if (!chat.joined || !this.device.hasChat(chat.id)) continue
+      for (const [member, key] of this.device.memberKeys(chat.id) as [string, Uint8Array][]) {
+        if (member === identity) return key
+      }
+    }
+    return new Uint8Array()
+  }
+
+  /** Signs out another of this person's devices for good. */
+  async revokeDevice(deviceId: number) {
+    await api.revokeDevice(deviceId)
+    await this.refresh('all')
+  }
+
+  /** Signs this device out for good and erases everything it stored. */
+  async removeThisDevice() {
+    await api.revokeDevice(this.deviceId)
+    await this.wipe()
+  }
+
+  /** The server no longer accepts this device: forget its keys and messages. */
+  private async wipe() {
+    if (this.status === 'revoked') return
+    this.status = 'revoked'
+    this.stop()
+    await Store.erase(this.me.id).catch((err) => console.error('could not erase local data', err))
+  }
+
+  private endSession() {
+    if (this.status === 'signedOut' || this.status === 'revoked') return
+    this.status = 'signedOut'
+    this.stop()
   }
 
   // -- things the person does ------------------------------------------------
