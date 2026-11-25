@@ -1,8 +1,8 @@
 # Harmony
 
 A small, private, self-hosted chat app for a group of friends: direct messages,
-group chats and voice calls, with end-to-end encryption. One Rust program, one
-SQLite file, no third-party services.
+group chats, rooms with drop-in voice channels, and voice calls, all end-to-end
+encrypted. One Rust program, one SQLite file, no third-party services.
 
 **Status:** early development. Accounts, invites and end-to-end encrypted direct
 messages and group chats work. File sharing and voice calls are next. Read

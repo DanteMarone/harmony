@@ -21,7 +21,13 @@
   let error = $state('')
 
   const isCreator = $derived(chat.created_by === engine.me.id)
-  const candidates = $derived(engine.users.filter((u) => !chat.members.some((m) => m.user_id === u.id)))
+  const room = $derived(chat.kind === 'room')
+  /** Whoever made a room, or an admin, can rename or delete it. */
+  const ownsRoom = $derived(room && (isCreator || engine.me.is_admin))
+  // Anyone can join a room on their own, so nobody is added to one.
+  const candidates = $derived(room ? [] : engine.users.filter((u) => !chat.members.some((m) => m.user_id === u.id)))
+  let newName = $state('')
+  let confirmDelete = $state(false)
 
   async function run(action: () => Promise<void>) {
     error = ''
@@ -40,14 +46,27 @@
   const remove = (userId: number) => run(() => engine.removeMember(chat.id, userId))
   const leave = () =>
     run(async () => {
-      await engine.removeMember(chat.id, engine.me.id)
+      if (room) await engine.leaveRoom(chat.id)
+      else await engine.removeMember(chat.id, engine.me.id)
+      onClose()
+    })
+  const rename = (event: SubmitEvent) => {
+    event.preventDefault()
+    return run(async () => {
+      await engine.renameRoom(chat.id, newName.trim())
+      newName = ''
+    })
+  }
+  const deleteRoom = () =>
+    run(async () => {
+      await engine.deleteRoom(chat.id)
       onClose()
     })
 </script>
 
 <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onClose()}>
   <div class="dialog card">
-    <h2>{chat.name}: members</h2>
+    <h2>{chat.name}: {room ? 'people in the room' : 'members'}</h2>
     <ul class="rows">
       {#each chat.members as member (member.user_id)}
         <li>
@@ -60,7 +79,7 @@
             <span class="row-actions">
               <span class="trust {status}">{statusText[status]}</span>
               <button class="secondary" onclick={() => onVerify(member.user_id)}>Verify</button>
-              {#if isCreator}
+              {#if isCreator && !room}
                 <button class="secondary" onclick={() => remove(member.user_id)}>Remove</button>
               {/if}
             </span>
@@ -85,9 +104,30 @@
       <button disabled={toAdd.length === 0} onclick={add}>Add to group</button>
     {/if}
 
+    {#if ownsRoom}
+      <h3>Room settings</h3>
+      <form class="inline-form" onsubmit={rename}>
+        <input bind:value={newName} maxlength="64" placeholder={chat.name ?? 'Room name'} aria-label="New room name" />
+        <button type="submit" class="secondary" disabled={!newName.trim()}>Rename</button>
+      </form>
+      {#if confirmDelete}
+        <p class="warning">This deletes the room and everything said in it, for everyone. It can't be undone.</p>
+        <div class="actions">
+          <button class="secondary" onclick={() => (confirmDelete = false)}>Keep the room</button>
+          <button class="danger-solid" onclick={deleteRoom}>Delete for everyone</button>
+        </div>
+      {:else}
+        <button class="secondary danger" onclick={() => (confirmDelete = true)}>Delete room</button>
+      {/if}
+    {/if}
+
+    {#if room}
+      <p class="hint">Anyone on this server can join this room. People who leave can come back, but can't read what was said while they were away.</p>
+    {/if}
+
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     <div class="actions">
-      <button class="secondary danger" onclick={leave}>Leave group</button>
+      <button class="secondary danger" onclick={leave}>{room ? 'Leave room' : 'Leave group'}</button>
       <button class="secondary" onclick={onClose}>Close</button>
     </div>
   </div>

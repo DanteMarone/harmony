@@ -116,7 +116,7 @@ impl Calls {
     }
 
     /// Users in the call, each listed once, in the order they joined by device id.
-    fn users_in(&self, chat_id: &str) -> Vec<i64> {
+    pub(crate) fn users_in(&self, chat_id: &str) -> Vec<i64> {
         let calls = self.0.lock().unwrap();
         let mut users: Vec<i64> = calls
             .get(chat_id)
@@ -131,6 +131,11 @@ impl Calls {
         users
     }
 
+    /// Ends the call list for a chat that no longer exists.
+    pub(crate) fn forget_chat(&self, chat_id: &str) {
+        self.0.lock().unwrap().remove(chat_id);
+    }
+
     fn chat_ids(&self) -> Vec<String> {
         self.0.lock().unwrap().keys().cloned().collect()
     }
@@ -143,9 +148,15 @@ pub async fn sweep_forever(state: AppState) {
     loop {
         tick.tick().await;
         for chat_id in state.calls.sweep() {
-            let _ = crate::chats::notify_chat(&state, &chat_id).await;
+            let _ = notify_presence(&state, &chat_id).await;
         }
     }
+}
+
+/// Tells the chat's members (and, for a room, everyone) who is in its call.
+async fn notify_presence(state: &AppState, chat_id: &str) -> ApiResult<()> {
+    crate::chats::notify_chat(state, chat_id).await?;
+    crate::rooms::notify_if_room(state, chat_id).await
 }
 
 fn livekit(state: &AppState) -> ApiResult<&LiveKit> {
@@ -196,7 +207,7 @@ async fn join(
     let me = identity(auth.user.id, auth.device_id);
     let token = access_token(&livekit, &chat_id, &me, &auth.user.display_name, now());
     if state.calls.enter(&chat_id, auth.device_id, auth.user.id) {
-        crate::chats::notify_chat(&state, &chat_id).await?;
+        notify_presence(&state, &chat_id).await?;
     }
     Ok(Json(json!({
         "url": livekit.url,
@@ -225,7 +236,7 @@ async fn leave(
     Path(chat_id): Path<String>,
 ) -> ApiResult<StatusCode> {
     if state.calls.exit(&chat_id, auth.device_id) {
-        crate::chats::notify_chat(&state, &chat_id).await?;
+        notify_presence(&state, &chat_id).await?;
     }
     Ok(StatusCode::NO_CONTENT)
 }

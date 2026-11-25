@@ -15,6 +15,7 @@ import {
   useDevice,
   type ChatEvent,
   type ChatInfo,
+  type RoomInfo,
   type User,
   type UserInfo,
 } from './api'
@@ -101,6 +102,8 @@ export class Engine {
   callsEnabled = $state(false)
   /** Calls in progress in this person's chats: chat id to user ids. */
   calls = $state<Record<string, number[]>>({})
+  /** Every room on the server, joined or not, with who is in its voice channel. */
+  rooms = $state<RoomInfo[]>([])
   /** Per chat: people with a device in it that their identity key does not vouch for. */
   unconfirmed = $state<Record<string, number[]>>({})
 
@@ -283,6 +286,10 @@ export class Engine {
           }
           return
         }
+        if (notice.type === 'rooms') {
+          void this.refreshRooms()
+          return
+        }
         void this.refresh(notice.type === 'chat' ? new Set([notice.chat_id as string]) : 'all')
       } catch {
         void this.refresh('all')
@@ -344,6 +351,7 @@ export class Engine {
         this.calls = list.calls
       })
       .catch((err) => console.error('could not list calls', err))
+    void this.refreshRooms()
     await this.checkRecovery()
     await this.rememberIdentities()
 
@@ -419,8 +427,9 @@ export class Engine {
     }
     if (!hasKeys) {
       if (meta.broken) return
-      if (chat.created_by === this.me.id && chat.epoch === 0 && chat.last_seq === 0) {
-        // We created this chat but were interrupted before starting its keys.
+      if ((chat.created_by === this.me.id || chat.kind === 'room') && chat.epoch === 0 && chat.last_seq === 0) {
+        // We created this chat (or were first into an empty room) but were
+        // interrupted before starting its keys.
         this.device.createChat(chat.id)
         await this.persist({ chats: [this.metaCopy(chat.id)] })
       } else {
@@ -997,6 +1006,79 @@ export class Engine {
     return chat.id
   }
 
+  // -- rooms -------------------------------------------------------------------
+
+  async refreshRooms() {
+    try {
+      this.rooms = await api.rooms()
+    } catch (err) {
+      console.error('could not list rooms', err)
+    }
+  }
+
+  /** Makes a room, with this person in it, and returns its id. */
+  async createRoom(name: string): Promise<string> {
+    const { chat } = await api.createRoom(name)
+    await this.enqueue(chat.id, async () => {
+      this.device.createChat(chat.id)
+      await this.persist({ chats: [this.metaCopy(chat.id)] })
+    })
+    await Promise.all([this.refresh(new Set([chat.id])), this.refreshRooms()])
+    return chat.id
+  }
+
+  /**
+   * Joins a room. Unless it was empty, the people already in it hand this
+   * device the room's keys the next time one of their devices is online.
+   */
+  async joinRoom(roomId: string) {
+    if (this.chats.some((c) => c.id === roomId)) return
+    await this.enqueue(roomId, async () => {
+      // Keys or a read position left over from an earlier stay are no use now.
+      if (this.device.hasChat(roomId)) this.device.deleteChat(roomId)
+      this.meta[roomId] = { chatId: roomId, cursor: 0, unread: 0 }
+      delete this.messages[roomId]
+      await this.persist({ chats: [this.metaCopy(roomId)] })
+      const { start } = await api.joinRoom(roomId)
+      if (start) {
+        this.device.createChat(roomId)
+        await this.persist()
+      }
+    })
+    await Promise.all([this.refresh(new Set([roomId])), this.refreshRooms()])
+  }
+
+  async leaveRoom(roomId: string) {
+    await api.removeMember(roomId, this.me.id)
+    await Promise.all([this.refresh('all'), this.refreshRooms()])
+  }
+
+  async renameRoom(roomId: string, name: string) {
+    await api.renameRoom(roomId, name)
+    await Promise.all([this.refresh(new Set([roomId])), this.refreshRooms()])
+  }
+
+  async deleteRoom(roomId: string) {
+    await api.deleteRoom(roomId)
+    await Promise.all([this.refresh('all'), this.refreshRooms()])
+  }
+
+  /** Whether this device holds the chat's keys and can read and talk in it. */
+  canRead(chatId: string): boolean {
+    const chat = this.chats.find((c) => c.id === chatId)
+    return !!chat?.joined && !this.meta[chatId]?.broken && this.device.hasChat(chatId)
+  }
+
+  /** Waits (up to `ms`) for this device to be let into a chat. */
+  async waitUntilReadable(chatId: string, ms: number): Promise<boolean> {
+    const until = Date.now() + ms
+    while (!this.canRead(chatId)) {
+      if (Date.now() > until || this.stopped || !this.chats.some((c) => c.id === chatId)) return false
+      await sleep(400)
+    }
+    return true
+  }
+
   async addMembers(chatId: string, userIds: number[]) {
     await api.addMembers(chatId, userIds)
     await this.refresh(new Set([chatId]))
@@ -1072,6 +1154,7 @@ export class Engine {
 
   chatTitle(chat: ChatInfo): string {
     if (chat.kind === 'group') return chat.name ?? 'Group'
+    if (chat.kind === 'room') return chat.name ?? 'Room'
     const other = chat.members.find((m) => m.user_id !== this.me.id)
     return other?.display_name ?? 'Just you'
   }

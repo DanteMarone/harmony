@@ -27,6 +27,10 @@ pub enum Notice {
     Chats,
     /// An invitation to join a chat is waiting for this device.
     Welcome,
+    /// The list of rooms changed: one was made, renamed or deleted, or
+    /// someone joined or left a room or its voice channel. Sent to everyone,
+    /// since every account can see every room.
+    Rooms,
     /// Someone's identity key or device signatures changed.
     Users,
     /// New items in this person's own history backup of a chat, from `from_seq` on.
