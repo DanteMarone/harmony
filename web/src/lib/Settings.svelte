@@ -2,7 +2,7 @@
   import type { User } from './api'
   import Avatar from './Avatar.svelte'
   import Icon, { type IconName } from './Icon.svelte'
-  import { playJoin, setSoundsOn, soundsOn } from './sounds'
+  import { preview, setSoundOn, soundOn, SOUNDS, type SoundKind } from './sounds'
 
   let {
     user,
@@ -19,13 +19,13 @@
     onClose: () => void
   } = $props()
 
-  let sounds = $state(soundsOn())
+  let sounds = $state(Object.fromEntries(SOUNDS.map((s) => [s.kind, soundOn(s.kind)])) as Record<SoundKind, boolean>)
   let notify = $state(typeof Notification === 'undefined' ? 'unsupported' : Notification.permission)
 
-  function toggleSounds() {
-    sounds = !sounds
-    setSoundsOn(sounds)
-    if (sounds) playJoin()
+  function toggleSound(kind: SoundKind) {
+    sounds[kind] = !sounds[kind]
+    setSoundOn(kind, sounds[kind])
+    if (sounds[kind]) preview(kind)
   }
 
   async function allowNotifications() {
@@ -67,13 +67,36 @@
           </button>
         </li>
       {/each}
-      <li>
-        <label class="menu-item">
-          <Icon name="volume" />
-          <span class="menu-text"><strong>Call sounds</strong><span class="hint">Ringtone and join and leave sounds</span></span>
-          <input type="checkbox" class="switch" checked={sounds} onchange={toggleSounds} />
-        </label>
-      </li>
+    </ul>
+
+    <h3 class="section-label">Sounds</h3>
+    <ul class="menu sounds">
+      {#each SOUNDS as sound (sound.kind)}
+        <li>
+          <div class="menu-item static">
+            <Icon name="volume" />
+            <label class="menu-text" for="sound-{sound.kind}">
+              <strong>{sound.title}</strong><span class="hint">{sound.detail}</span>
+            </label>
+            <button
+              class="icon-button"
+              aria-label="Play the {sound.title.toLowerCase()} sound"
+              title="Play"
+              onclick={() => preview(sound.kind)}><Icon name="play" size={16} /></button
+            >
+            <input
+              id="sound-{sound.kind}"
+              type="checkbox"
+              class="switch"
+              checked={sounds[sound.kind]}
+              onchange={() => toggleSound(sound.kind)}
+            />
+          </div>
+        </li>
+      {/each}
+    </ul>
+
+    <ul class="menu">
       {#if notify !== 'unsupported'}
         <li>
           <div class="menu-item static">

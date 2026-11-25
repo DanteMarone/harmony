@@ -18,6 +18,7 @@ import {
   type User,
   type UserInfo,
 } from './api'
+import { playMessage } from './sounds'
 import { Store, type StoredChat, type StoredMessage, type TrustRecord } from './store'
 
 const ONE_TIME_KEY_PACKAGES = 20
@@ -448,6 +449,7 @@ export class Engine {
         throw err
       }
       const changed: StoredMessage[] = []
+      let fresh = false
       for (const event of page.events) {
         const mine = event.sender_device === this.deviceId
         if (mine && event.kind === 'commit') {
@@ -465,7 +467,11 @@ export class Engine {
             const message = this.readMessage(chat.id, event, processed.sender, processed.content)
             if (message) {
               changed.push(message)
-              if (this.activeChat !== chat.id || document.hidden) meta.unread += 1
+              if (this.activeChat !== chat.id || document.hidden) {
+                meta.unread += 1
+                // Catching up on old messages (after a reload or time offline) stays quiet.
+                if (Date.now() / 1000 - message.sentAt < 60) fresh = true
+              }
             }
           } catch (err) {
             console.error('could not process event', chat.id, event.seq, err)
@@ -495,6 +501,7 @@ export class Engine {
         await this.persist({ chats: [this.metaCopy(chat.id)], messages: changed })
         changed.forEach((m) => this.showMessage(m))
       }
+      if (fresh) playMessage()
       if (!page.more) break
     }
     if (meta.pendingCommit) {
