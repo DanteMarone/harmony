@@ -28,7 +28,7 @@ use crate::{
 
 const MAX_EVENT_BYTES: usize = 256 * 1024;
 const MAX_WELCOME_BYTES: usize = 1024 * 1024;
-const MAX_GROUP_MEMBERS: usize = 100;
+pub(crate) const MAX_GROUP_MEMBERS: usize = 100;
 const EVENTS_PAGE: i64 = 200;
 
 pub fn routes() -> Router<AppState> {
@@ -50,7 +50,7 @@ pub fn routes() -> Router<AppState> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-async fn member_ids(db: &SqlitePool, chat_id: &str) -> ApiResult<Vec<i64>> {
+pub(crate) async fn member_ids(db: &SqlitePool, chat_id: &str) -> ApiResult<Vec<i64>> {
     let rows: Vec<(i64,)> = sqlx::query_as("SELECT user_id FROM chat_members WHERE chat_id = ?")
         .bind(chat_id)
         .fetch_all(db)
@@ -103,7 +103,7 @@ struct MemberInfo {
 }
 
 #[derive(Serialize)]
-struct ChatInfo {
+pub(crate) struct ChatInfo {
     id: String,
     kind: String,
     name: Option<String>,
@@ -116,7 +116,7 @@ struct ChatInfo {
     joined: bool,
 }
 
-async fn chat_info(db: &SqlitePool, chat_id: &str, device_id: i64) -> ApiResult<ChatInfo> {
+pub(crate) async fn chat_info(db: &SqlitePool, chat_id: &str, device_id: i64) -> ApiResult<ChatInfo> {
     let (id, kind, name, epoch, created_by, created_at): (
         String,
         String,
@@ -124,11 +124,14 @@ async fn chat_info(db: &SqlitePool, chat_id: &str, device_id: i64) -> ApiResult<
         i64,
         Option<i64>,
         i64,
-    ) = sqlx::query_as("SELECT id, kind, name, epoch, created_by, created_at FROM chats WHERE id = ?")
-        .bind(chat_id)
-        .fetch_optional(db)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+    ) = sqlx::query_as(
+        "SELECT id, CASE WHEN room = 1 THEN 'room' ELSE kind END, name, epoch, created_by, created_at
+         FROM chats WHERE id = ?",
+    )
+    .bind(chat_id)
+    .fetch_optional(db)
+    .await?
+    .ok_or(ApiError::NotFound)?;
     let members: Vec<(i64, String, String)> = sqlx::query_as(
         "SELECT u.id, u.username, u.display_name FROM chat_members m JOIN users u ON u.id = m.user_id
          WHERE m.chat_id = ? ORDER BY u.display_name COLLATE NOCASE",
@@ -166,7 +169,7 @@ async fn chat_info(db: &SqlitePool, chat_id: &str, device_id: i64) -> ApiResult<
     })
 }
 
-fn clean_name(name: Option<&str>) -> ApiResult<String> {
+pub(crate) fn clean_name(name: Option<&str>) -> ApiResult<String> {
     let name = name.map(str::trim).unwrap_or("");
     if name.is_empty() || name.chars().count() > 64 {
         return Err(ApiError::BadRequest("group name must be 1-64 characters"));
@@ -358,7 +361,9 @@ async fn remove_member(
     if kind != "group" {
         return Err(ApiError::BadRequest("direct messages cannot be left"));
     }
-    if target != user.id && created_by != Some(user.id) {
+    let room = crate::rooms::is_room(&state.db, &chat_id).await?;
+    // Anyone can walk back into a room, so nobody is removed from one but themselves.
+    if target != user.id && (room || created_by != Some(user.id)) {
         return Err(ApiError::Forbidden);
     }
     let everyone = member_ids(&state.db, &chat_id).await?;
@@ -386,14 +391,23 @@ async fn remove_member(
         .execute(&state.db)
         .await?;
     if everyone.len() == 1 {
-        // The last person left: nothing can ever read this chat again.
-        sqlx::query("DELETE FROM chats WHERE id = ?")
-            .bind(&chat_id)
-            .execute(&state.db)
-            .await?;
+        if room {
+            // The last person left: the room stays, empty, for the next
+            // person in, who starts its keys afresh.
+            crate::rooms::empty_out(&state.db, &chat_id).await?;
+        } else {
+            // The last person left: nothing can ever read this chat again.
+            sqlx::query("DELETE FROM chats WHERE id = ?")
+                .bind(&chat_id)
+                .execute(&state.db)
+                .await?;
+        }
     }
     state.hub.notify(everyone.clone(), Notice::Chats);
     state.hub.notify(everyone, Notice::Chat { chat_id });
+    if room {
+        crate::rooms::notify_everyone(&state).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -584,3 +584,25 @@ button.menu-item, .menu-item {
 .call-mic { display: grid; gap: 0.2rem; font-size: 0.85rem; }
 .call-mic select { width: 100%; }
 .chat-head > div { flex: 1; min-width: 0; }
+
+/* Rooms: a "#" row per room, its voice button, and who is talking in it. */
+.section-head { display: flex; align-items: center; justify-content: space-between; padding-right: 0.25rem; }
+.section-head .section-label { margin-bottom: 0.25rem; }
+.icon-button.small { width: 1.75rem; height: 1.75rem; }
+.room-row { display: flex; align-items: center; gap: 2px; }
+.room-row .chat-item { flex: 1; min-width: 0; }
+.voice-button { color: var(--muted); }
+.voice-button.live { color: var(--ok); }
+.voice-people { list-style: none; margin: 0 0 0.25rem; padding: 0 0 0 2.1rem; display: grid; gap: 2px; }
+.voice-people li { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; color: var(--muted); }
+.voice-people li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-empty { margin: 0 0.5rem 0.5rem; }
+.room-preview .actions { justify-content: flex-start; }
+.in-voice { display: flex; align-items: center; gap: 0.4rem; color: var(--ok); font-weight: 600; }
+button.join-voice { display: inline-flex; align-items: center; gap: 0.35rem; }
+button.join-voice.live { background: var(--ok); border-color: var(--ok); color: var(--accent-text); }
+.inline-form { display: flex; gap: 0.5rem; margin-top: 0; }
+.inline-form input { flex: 1; min-width: 0; }
+@media (max-width: 720px) {
+  .join-voice .label { display: none; }
+}

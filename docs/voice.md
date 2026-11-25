@@ -92,3 +92,29 @@ few hundred MB of RAM is plenty.
 To check calls work, sign in on two devices, open a shared chat on both and
 press **Call**. Each side should see the other in the call panel, and their
 voice should come through.
+
+## Rooms
+
+A room is a chat with its own voice channel that stays open: people drop in
+and out instead of ringing each other. Every account on the server can see
+every room, who is in it, and who is in its voice channel, and can join a room
+on their own.
+
+Joining a room works like being added to a group chat. The server records the
+new member, and the next device of someone already in the room that is online
+hands the newcomer's devices the room's keys (an MLS commit and welcome), so
+room messages and voice stay end-to-end encrypted. Two consequences:
+
+- A newcomer can't read anything said before they joined.
+- If nobody in the room has a device online, a newcomer waits until someone
+  does. Pressing **Join voice** in a room nobody is talking in can therefore
+  take a moment, or ask to be tried again later. The first person into an
+  empty room starts its keys on their own device straight away.
+
+Nobody can remove someone else from a room, since they could walk straight
+back in. Whoever made a room, or an admin, can rename or delete it. When the
+last person leaves, the room stays in the list, its unreadable history is
+dropped, and the next person to join starts its keys afresh.
+
+Room voice channels never ring. Calls in direct messages and group chats ring
+as before.

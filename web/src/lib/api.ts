@@ -72,7 +72,8 @@ export interface ChatMember {
 
 export interface ChatInfo {
   id: string
-  kind: 'dm' | 'group'
+  /** A room is a group chat that anyone can join, with its own voice channel. */
+  kind: 'dm' | 'group' | 'room'
   name: string | null
   epoch: number
   created_by: number | null
@@ -81,6 +82,18 @@ export interface ChatInfo {
   members: ChatMember[]
   /** Whether this device holds the chat's keys yet. */
   joined: boolean
+}
+
+export interface RoomInfo {
+  id: string
+  name: string
+  created_by: number | null
+  created_at: number
+  member_ids: number[]
+  /** Whether you are in the room. */
+  member: boolean
+  /** Who is in the room's voice channel right now. */
+  voice: number[]
 }
 
 export interface PendingDevice {
@@ -212,6 +225,12 @@ export const api = {
       headers: deviceId === null ? {} : { 'X-Harmony-Device': String(deviceId) },
     }).catch(() => {})
   },
+  rooms: () => request<RoomInfo[]>('GET', '/rooms'),
+  createRoom: (name: string) => request<{ chat: ChatInfo }>('POST', '/rooms', { name }),
+  /** `start`: the room was empty, so this device starts its keys. */
+  joinRoom: (room: string) => request<{ chat: ChatInfo; start: boolean }>('POST', `/rooms/${room}/join`),
+  renameRoom: (room: string, name: string) => request<void>('PUT', `/rooms/${room}/name`, { name }),
+  deleteRoom: (room: string) => request<void>('DELETE', `/rooms/${room}`),
   welcomes: () => request<{ welcomes: Welcome[] }>('GET', '/welcomes'),
   ackWelcome: (id: number) => request<void>('DELETE', `/welcomes/${id}`),
 }

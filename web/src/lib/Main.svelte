@@ -12,7 +12,9 @@
   import Invites from './Invites.svelte'
   import Members from './Members.svelte'
   import NewChat from './NewChat.svelte'
+  import NewRoom from './NewRoom.svelte'
   import Recovery from './Recovery.svelte'
+  import RoomPreview from './RoomPreview.svelte'
   import Settings from './Settings.svelte'
   import { playJoin, playLeave, startRinging } from './sounds'
   import Verify from './Verify.svelte'
@@ -84,7 +86,9 @@
         for (const [chatId, people] of Object.entries(calls)) {
           if (!people.length || before[chatId]?.length) continue
           if (people.includes(engine.me.id) || call?.chatId === chatId) continue
-          if (!engine.chats.some((c) => c.id === chatId)) continue
+          // A room's voice channel is somewhere people drop in, not a call to answer.
+          const chat = engine.chats.find((c) => c.id === chatId)
+          if (!chat || chat.kind === 'room') continue
           ringing = { chatId, callerId: people[0] }
         }
       }
@@ -138,7 +142,66 @@
   })
   onDestroy(() => void call?.end())
 
-  let dialog = $state<'new' | 'members' | 'invites' | 'security' | 'devices' | 'settings' | null>(null)
+  // -- rooms --
+  /** A room this person is looking at but is not in yet. */
+  let previewRoom = $state<string | null>(null)
+  const previewInfo = $derived(previewRoom ? (engine.rooms.find((r) => r.id === previewRoom) ?? null) : null)
+  /** The room whose voice channel this device is on its way into. */
+  let joiningVoice = $state<string | null>(null)
+  let joiningRoom = $state(false)
+
+  function openRoom(roomId: string) {
+    if (engine.chats.some((c) => c.id === roomId)) {
+      open(roomId)
+      return
+    }
+    engine.activeChat = null
+    previewRoom = roomId
+    showList = false
+  }
+
+  async function joinRoom(roomId: string) {
+    joiningRoom = true
+    callError = ''
+    try {
+      await engine.joinRoom(roomId)
+      open(roomId)
+    } catch (err) {
+      callError = err instanceof Error ? err.message : 'Could not join the room.'
+    } finally {
+      joiningRoom = false
+    }
+  }
+
+  /** Into the room (if need be), then into its voice channel. */
+  async function joinVoice(roomId: string) {
+    if (joiningVoice) return
+    callError = ''
+    if (call?.chatId === roomId) {
+      open(roomId)
+      return
+    }
+    joiningVoice = roomId
+    try {
+      await engine.joinRoom(roomId)
+      open(roomId)
+      // Someone already in the room has to hand this device its keys first.
+      if (!(await engine.waitUntilReadable(roomId, 30_000))) {
+        if (engine.chats.some((c) => c.id === roomId)) {
+          callError =
+            "Nobody in this room has been online to let this device in yet. You're in the room, and can join its voice once someone is."
+        }
+        return
+      }
+      await joinCall(roomId)
+    } catch (err) {
+      callError = err instanceof Error ? err.message : 'Could not join the voice channel.'
+    } finally {
+      joiningVoice = null
+    }
+  }
+
+  let dialog = $state<'new' | 'room' | 'members' | 'invites' | 'security' | 'devices' | 'settings' | null>(null)
   /** The person whose verification screen is open, on top of any other dialog. */
   let verifying = $state<number | null>(null)
   // A recovery code must be set up before anything else; entering one on a
@@ -151,7 +214,7 @@
   }
 
   const chats = $derived(
-    [...engine.chats].sort((a, b) => Math.max(b.last_seq, 0) - Math.max(a.last_seq, 0) || b.created_at - a.created_at),
+    engine.chats.filter((c) => c.kind !== 'room').sort((a, b) => Math.max(b.last_seq, 0) - Math.max(a.last_seq, 0) || b.created_at - a.created_at),
   )
   const active = $derived(engine.chats.find((c) => c.id === engine.activeChat) ?? null)
 
@@ -166,7 +229,13 @@
 
   function open(chatId: string) {
     showList = false
+    previewRoom = null
     void engine.openChat(chatId)
+  }
+
+  function newRoomDone(roomId: string | null) {
+    dialog = null
+    if (roomId) open(roomId)
   }
 
   function newChatDone(chatId: string | null) {
@@ -213,7 +282,7 @@
     <button onclick={() => location.reload()}>Try again</button>
   </main>
 {:else}
-  <div class="layout" class:chat-open={active && !showList}>
+  <div class="layout" class:chat-open={(active || previewInfo) && !showList}>
     <aside class="sidebar">
       <header>
         <span class="brand">Harmony</span>
@@ -221,7 +290,60 @@
           <Icon name="plus" />
         </button>
       </header>
-      <nav aria-label="Chats">
+      <nav aria-label="Rooms and chats">
+        <div class="section-head">
+          <p class="section-label">Rooms</p>
+          <button class="icon-button small" title="New room" aria-label="New room" onclick={() => (dialog = 'room')}>
+            <Icon name="plus" size={16} />
+          </button>
+        </div>
+        {#each engine.rooms as room (room.id)}
+          {@const unread = engine.meta[room.id]?.unread ?? 0}
+          {@const current = room.id === engine.activeChat || room.id === previewRoom}
+          <div class="room-row">
+            <button
+              class="chat-item room-item"
+              class:active={current}
+              class:unread={unread > 0 && room.member}
+              aria-current={current ? 'page' : undefined}
+              onclick={() => openRoom(room.id)}
+            >
+              <Icon name="hash" size={18} />
+              <span class="title">{room.name}</span>
+              {#if unread && room.member}
+                <span class="badge" aria-label="{unread} unread">{unread > 99 ? '99+' : unread}</span>
+              {/if}
+            </button>
+            {#if engine.callsEnabled}
+              <button
+                class="icon-button small voice-button"
+                class:live={call?.chatId === room.id}
+                title={call?.chatId === room.id ? `In voice in ${room.name}` : `Join voice in ${room.name}`}
+                aria-label="Join voice in {room.name}"
+                disabled={joiningVoice !== null}
+                onclick={() => joinVoice(room.id)}
+              >
+                <Icon name="volume" size={16} />
+              </button>
+            {/if}
+          </div>
+          {#if room.voice.length || joiningVoice === room.id}
+            <ul class="voice-people" aria-label="In voice in {room.name}">
+              {#each room.voice as userId (userId)}
+                <li>
+                  <Avatar name={engine.userName(userId)} id={userId} size={20} />
+                  <span>{engine.userName(userId)}</span>
+                </li>
+              {/each}
+              {#if joiningVoice === room.id && !room.voice.includes(engine.me.id)}
+                <li class="hint">Joining…</li>
+              {/if}
+            </ul>
+          {/if}
+        {:else}
+          <p class="hint room-empty">No rooms yet. A room is a chat with its own voice channel that anyone can join.</p>
+        {/each}
+
         {#if chats.length}<p class="section-label">Chats</p>{/if}
         {#each chats as chat (chat.id)}
           {@const unread = engine.meta[chat.id]?.unread ?? 0}
@@ -236,8 +358,8 @@
           >
             <Avatar
               name={engine.chatTitle(chat)}
-              id={chat.kind === 'group' ? chat.id : (other?.user_id ?? engine.me.id)}
-              group={chat.kind === 'group'}
+              id={chat.kind === 'dm' ? (other?.user_id ?? engine.me.id) : chat.id}
+              group={chat.kind !== 'dm'}
               size={32}
             />
             <span class="title">{engine.chatTitle(chat)}</span>
@@ -289,12 +411,23 @@
         onVerify={(userId) => (verifying = userId)}
         onBack={() => (showList = true)}
       />
+    {:else if previewInfo}
+      <RoomPreview
+        {engine}
+        room={previewInfo}
+        busy={joiningRoom || joiningVoice !== null}
+        onJoin={() => joinRoom(previewInfo.id)}
+        onJoinVoice={() => joinVoice(previewInfo.id)}
+        onBack={() => (showList = true)}
+      />
     {:else}
       <section class="chat placeholder">
         <div class="welcome">
           <Avatar name={user.display_name} id={user.id} size={56} />
           <h2>Hi, {user.display_name}</h2>
-          <p class="lead">Pick a chat on the left, or start a new one. Everything here is end-to-end encrypted.</p>
+          <p class="lead">
+            Pick a room or chat on the left, or start a new one. Everything here is end-to-end encrypted.
+          </p>
           <button onclick={() => (dialog = 'new')}>New chat</button>
         </div>
       </section>
@@ -332,6 +465,8 @@
     />
   {:else if dialog === 'new'}
     <NewChat {engine} onDone={newChatDone} />
+  {:else if dialog === 'room'}
+    <NewRoom {engine} onDone={newRoomDone} />
   {:else if dialog === 'members' && active}
     <Members {engine} chat={active} onClose={() => (dialog = null)} onVerify={(userId) => (verifying = userId)} />
   {:else if dialog === 'invites'}

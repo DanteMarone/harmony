@@ -26,6 +26,7 @@
   } = $props()
 
   const inProgress = $derived(engine.calls[chat.id] ?? [])
+  const room = $derived(chat.kind === 'room')
 
   const warnings = $derived(engine.chatWarnings(chat))
   const other = $derived(chat.kind === 'dm' ? chat.members.find((m) => m.user_id !== engine.me.id) : undefined)
@@ -76,22 +77,34 @@
     </button>
     <Avatar
       name={engine.chatTitle(chat)}
-      id={chat.kind === 'group' ? chat.id : (other?.user_id ?? engine.me.id)}
-      group={chat.kind === 'group'}
+      id={chat.kind === 'dm' ? (other?.user_id ?? engine.me.id) : chat.id}
+      group={chat.kind !== 'dm'}
       size={36}
     />
     <div class="chat-title">
       <h2>{engine.chatTitle(chat)}</h2>
       <p class="hint secure" class:ok={otherVerified}>
         <Icon name="lock" size={13} />
-        {chat.kind === 'group' ? `${chat.members.length} members · end-to-end encrypted` : 'End-to-end encrypted'}{otherVerified
+        {chat.kind === 'room'
+          ? `Room · ${chat.members.length} in it · end-to-end encrypted`
+          : chat.kind === 'group'
+            ? `${chat.members.length} members · end-to-end encrypted`
+            : 'End-to-end encrypted'}{otherVerified
           ? ' · verified'
           : ''}
       </p>
     </div>
     {#if engine.callsEnabled && chat.joined && !broken}
       {#if inCall}
-        <span class="pill live"><Icon name="phone" size={14} /> In call</span>
+        <span class="pill live"><Icon name={room ? 'volume' : 'phone'} size={14} /> {room ? 'In voice' : 'In call'}</span>
+      {:else if room}
+        <button
+          class={inProgress.length ? 'join-voice live' : 'join-voice secondary'}
+          title="Join this room's voice channel"
+          onclick={onCall}
+        >
+          <Icon name="volume" size={18} /> <span class="label">Join voice</span>{inProgress.length ? ` · ${inProgress.length}` : ''}
+        </button>
       {:else if inProgress.length}
         <button class="join-call" onclick={onCall}>
           <Icon name="phone" size={18} /> <span class="label">Join call ·</span> {inProgress.length}
@@ -102,8 +115,10 @@
         </button>
       {/if}
     {/if}
-    {#if chat.kind === 'group'}
-      <button class="icon-button" title="Members" aria-label="Members" onclick={onMembers}><Icon name="users" /></button>
+    {#if chat.kind !== 'dm'}
+      <button class="icon-button" title={room ? 'Room' : 'Members'} aria-label={room ? 'Room' : 'Members'} onclick={onMembers}
+        ><Icon name="users" /></button
+      >
     {:else if other}
       <button
         class="icon-button"
@@ -138,8 +153,13 @@
       </div>
     {:else if waiting}
       <p class="notice">
-        Waiting for another member's device to share this chat's keys with this device. That happens
-        automatically the next time one of them is online.
+        {#if room}
+          Waiting for someone already in this room to share its keys with this device. That happens
+          automatically as soon as one of their devices is online.
+        {:else}
+          Waiting for another member's device to share this chat's keys with this device. That happens
+          automatically the next time one of them is online.
+        {/if}
       </p>
     {:else if messages.length === 0}
       <p class="notice">
