@@ -14,7 +14,7 @@
   import NewChat from './NewChat.svelte'
   import Recovery from './Recovery.svelte'
   import Settings from './Settings.svelte'
-  import { playJoin, playLeave, startRinging } from './sounds'
+  import { playHangup, playJoin, playLeave, startRinging } from './sounds'
   import Verify from './Verify.svelte'
 
   let { user, onSignOut }: { user: User; onSignOut: () => void } = $props()
@@ -44,12 +44,14 @@
     await next.start()
   }
 
-  // A call that ended (left, dropped, or failed) is cleared away.
+  // A call that ended (left, dropped, or failed) is cleared away. Hanging up
+  // yourself gets its own sound; a call that dropped sounds like someone leaving.
   $effect(() => {
     if (call?.status === 'ended') {
       callError = call.error
       call = null
-      playLeave()
+      if (callError) playLeave()
+      else playHangup()
     }
   })
 

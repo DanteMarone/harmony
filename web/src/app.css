@@ -506,6 +506,9 @@ button.menu-item, .menu-item {
 .menu-item.attention > .icon:first-child { color: inherit; }
 .menu-text { flex: 1; min-width: 0; display: grid; line-height: 1.3; }
 .menu-text .hint { font-size: 0.8rem; }
+label.menu-text { cursor: pointer; }
+.menu.sounds { margin-top: 0; }
+.settings .section-label { margin-top: 1.1rem; }
 .switch {
   appearance: none;
   flex: none;
